@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TryAIToday Automator</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <h1>Flow Automator</h1>
+      <span id="status" class="status">Idle</span>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="queue">Queue</button>
+      <button class="tab" data-tab="settings">Settings</button>
+      <button class="tab" data-tab="refs">References <span id="ref-count" class="tab-badge">0</span></button>
+      <button class="tab" data-tab="history">History <span id="history-count" class="tab-badge">0</span></button>
+    </nav>
+
+    <!-- QUEUE -->
+    <section id="tab-queue" class="tab-panel active">
+      <div class="card">
+        <div class="row">
+          <span id="run-label" class="run-label"></span>
+        </div>
+        <textarea id="prompt-input" rows="3" placeholder="Paste one or more prompts (one per line). Use #name for filenames, @name to attach a reference, @start:x / @end:x / @reference:x for roles…"></textarea>
+        <div class="row">
+          <button id="add-btn" class="btn primary">Add to queue</button>
+          <label class="btn">
+            Import .txt
+            <input id="import-file" type="file" accept=".txt,text/plain" hidden />
+          </label>
+        </div>
+      </div>
+
+      <div class="controls card">
+        <button id="start-btn" class="btn primary">Start</button>
+        <button id="pause-btn" class="btn">Pause</button>
+        <button id="resume-btn" class="btn">Resume</button>
+        <button id="stop-btn" class="btn danger">Stop</button>
+        <button id="retry-btn" class="btn">Retry failed</button>
+        <button id="redl-btn" class="btn">Retry downloads</button>
+        <button id="clear-btn" class="btn">New run</button>
+      </div>
+
+      <div class="card queue-card">
+        <div class="stats" id="stats"></div>
+        <div class="filterbar">
+          <input id="search" type="search" placeholder="Search prompts…" />
+          <select id="filter-status">
+            <option value="all">All</option>
+            <option value="queued">Queued</option>
+            <option value="running">Running</option>
+            <option value="downloading">Downloading</option>
+            <option value="completed">Completed</option>
+            <option value="failed">Failed</option>
+            <option value="download-failed">DL failed</option>
+            <option value="skipped">Skipped</option>
+          </select>
+        </div>
+        <div class="queue-head">
+          <h2>Queue</h2>
+          <span id="queue-count" class="muted">0 jobs</span>
+        </div>
+        <div id="queue" class="queue"></div>
+        <p id="empty" class="muted">Queue is empty. Add prompts above or import a .txt file.</p>
+        <p id="filter-empty" class="muted hidden">No jobs match the current search/filter.</p>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="tab-settings" class="tab-panel">
+      <div class="card">
+        <div class="field-group">
+          <label class="field-label">Output type</label>
+          <div class="segmented">
+            <button id="gen-image" class="seg active">Image</button>
+            <button id="gen-video" class="seg">Video</button>
+          </div>
+        </div>
+
+        <div id="settings-form" class="settings-form">
+          <label class="field">Model
+            <input id="set-model" type="text" />
+          </label>
+          <label class="field">Aspect ratio
+            <input id="set-aspect" type="text" />
+          </label>
+          <label class="field">Quality
+            <input id="set-quality" type="text" />
+          </label>
+          <label class="field">Count
+            <input id="set-count" type="number" min="1" />
+          </label>
+        </div>
+
+        <div id="video-settings" class="video-settings hidden">
+          <label class="field">Video mode
+            <select id="set-videomode">
+              <option value="text-to-video">Text to video</option>
+              <option value="start-frame">Start frame</option>
+              <option value="start-end-frame">Start + End frame</option>
+              <option value="reference">Reference</option>
+            </select>
+          </label>
+          <label class="field">Duration (s)
+            <input id="set-duration" type="number" min="1" />
+          </label>
+        </div>
+
+        <button id="save-settings" class="btn primary full">Save global settings</button>
+      </div>
+
+      <div class="card">
+        <h2>Flow refresh</h2>
+        <p class="muted">Reload the Flow tab periodically to keep the session healthy. Runs only between jobs so an active generation is never interrupted. Your queue is saved first and resumes automatically.</p>
+        <label class="field row-inline">
+          <input id="refresh-enabled" type="checkbox" />
+          <span>Refresh Flow periodically</span>
+        </label>
+        <div class="row">
+          <label class="field grow">Interval (minutes, 0 = off)
+            <input id="refresh-interval" type="number" min="0" />
+          </label>
+          <label class="field grow">After N jobs (0 = off)
+            <input id="refresh-jobs" type="number" min="0" />
+          </label>
+        </div>
+        <button id="save-refresh" class="btn primary full">Save refresh settings</button>
+      </div>
+    </section>
+
+    <!-- REFERENCES -->
+    <section id="tab-refs" class="tab-panel">
+      <div class="card">
+        <label class="btn full">
+          Upload image
+          <input id="ref-file" type="file" accept="image/*" hidden />
+        </label>
+        <div class="row">
+          <label class="field grow">Name (used as @name)
+            <input id="ref-name" type="text" placeholder="e.g. john" />
+          </label>
+          <label class="field">Category
+            <select id="ref-category">
+              <option value="Subject">Subject</option>
+              <option value="Scene">Scene</option>
+              <option value="Style">Style</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Library</h2>
+        <div id="ref-list" class="ref-list"></div>
+        <p id="ref-empty" class="muted">No references yet. Upload an image and give it a @name.</p>
+      </div>
+    </section>
+
+    <!-- HISTORY -->
+    <section id="tab-history" class="tab-panel">
+      <div class="card">
+        <h2>Run history</h2>
+        <p class="muted">Latest 10 finished runs per type. Open to resume/edit, or run again in a fresh folder.</p>
+        <div id="history-list" class="history-list"></div>
+        <p id="history-empty" class="muted">No finished runs yet.</p>
+      </div>
+    </section>
+
+    <!-- PREVIEW MODAL -->
+    <div id="modal" class="modal hidden">
+      <div class="modal-backdrop" id="modal-backdrop"></div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "name": "tryaitoday-automator",
+  "version": "0.4.0",
+  "description": "Local-only Chrome extension MVP for automating prompt generation in Google Flow",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "watch": "tsc -p tsconfig.json -w",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src",
+    "test": "node scripts/build.mjs && node --test \"test/*.mjs\"",
+    "test:types": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/chrome": "^0.2.7",
+    "eslint": "^10.9.1",
+    "typescript": "^5.5.4",
+    "typescript-eslint": "^8.68.0"
+  }
+}

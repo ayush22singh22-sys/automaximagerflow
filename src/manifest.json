@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "TryAIToday Automator",
+  "version": "0.4.0",
+  "description": "Local-only queue that drives prompts through your open Google Flow session.",
+  "permissions": ["storage", "tabs", "downloads", "alarms", "scripting", "activeTab", "debugger"],
+  "host_permissions": [
+    "<all_urls>",
+    "https://labs.google/*",
+    "https://*.labs.google/*",
+    "https://labs.google.com/*",
+    "https://*.labs.google.com/*",
+    "https://flow.google.com/*",
+    "https://flow.google/*",
+    "https://*.google.com/*",
+    "https://*.google/*",
+    "https://*.withgoogle.com/*"
+  ],
+  "action": {
+    "default_title": "Flow Automator",
+    "default_popup": "popup/popup.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://labs.google/*",
+        "https://*.labs.google/*",
+        "https://labs.google.com/*",
+        "https://*.labs.google.com/*",
+        "https://flow.google.com/*",
+        "https://flow.google/*",
+        "https://*.google.com/fx/*",
+        "https://*.google/fx/*",
+        "https://aitestkitchen.withgoogle.com/*"
+      ],
+      "js": ["content/flow.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
