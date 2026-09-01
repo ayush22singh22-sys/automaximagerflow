@@ -814,11 +814,16 @@ class FlowDriver {
   private async waitForResult(): Promise<void> {
     const start = Date.now();
     const timeoutMs = 5 * 60 * 1000;
+    const graceMs = 3000;              // Grace period: skip failure check during initial 3s
+    let consecutiveFailureTicks = 0;   // Debounce counter for failure signals
+    const requiredFailureTicks = 3;    // Require 3 consecutive failure ticks before throwing
+
     while (Date.now() - start < timeoutMs) {
       const results = this.resultElements();
       const newResults = results.length - this.baselineResultCount;
 
       if (newResults > 0) {
+        consecutiveFailureTicks = 0;   // Reset counter on any new result
         this.resultCount = Math.max(this.resultCount, newResults);
         this.previewUrls = results.slice(this.baselineResultCount).slice(0, 4).map((e) => {
           const url = (e as HTMLImageElement | HTMLVideoElement).src ?? '';
@@ -843,9 +848,18 @@ class FlowDriver {
         }
       }
 
-      if (this.failureSurface() && !this.generatingActive()) {
-        throw new Error('Flow reported a generation failure');
+      // Check for failure surface only after grace period, with 3-tick debounce
+      const pastGracePeriod = Date.now() - start > graceMs;
+      if (pastGracePeriod && this.failureSurface() && !this.generatingActive()) {
+        consecutiveFailureTicks++;
+        console.log(`[flow] failure signal tick ${consecutiveFailureTicks}/${requiredFailureTicks}`);
+        if (consecutiveFailureTicks >= requiredFailureTicks) {
+          throw new Error('Flow reported a generation failure');
+        }
+      } else {
+        consecutiveFailureTicks = 0;
       }
+
       await new Promise((r) => setTimeout(r, 1000));
     }
     throw new Error('Timed out waiting for a generated result');
