@@ -680,12 +680,15 @@ class FlowDriver {
   }
 
   private failureSurface(): boolean {
-    // Check specific error selectors.
-    if (selectors.failed.some((s) => visible($(s)))) return true;
-    // Also check role=alert but ONLY if it contains non-trivial text
-    // (avoids ambient/always-present alert regions that are empty).
+    const ERROR_TEXT_RE = /(error|failed|unable|violation|policy|something went wrong|try again)/i;
+    // Check specific error selectors with error text.
+    for (const sel of selectors.failed) {
+      const el = $(sel);
+      if (el && visible(el) && ERROR_TEXT_RE.test(el.textContent ?? '')) return true;
+    }
+    // Check role=alert ONLY if it contains explicit error keywords (prevents ambient alert false positives).
     const alerts = all('[role="alert"]').filter((el) => visible(el));
-    return alerts.some((el) => (el.textContent ?? '').trim().length > 5);
+    return alerts.some((el) => ERROR_TEXT_RE.test((el.textContent ?? '').trim()));
   }
 
   // FIX #3: Broadened result element collection.
