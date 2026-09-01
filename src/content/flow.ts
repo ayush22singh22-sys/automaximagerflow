@@ -767,19 +767,41 @@ class FlowDriver {
       const vidEl = el instanceof HTMLVideoElement ? el : el.querySelector<HTMLVideoElement>('video');
 
       if (imgEl) {
-        const src = imgEl.currentSrc || imgEl.src || '';
-        if (!src) continue;
+        // Strategy 1: Direct Canvas Draw (fastest & handles blob: without CORS issues)
         try {
-          // fetch() works for both blob: and https: URLs in the content script.
-          const res = await fetch(src);
-          if (!res.ok) continue;
-          const blob = await res.blob();
-          const dataUrl = await blobToDataUrl(blob);
-          if (dataUrl && dataUrl.length > 50) dataUrls.push(dataUrl);
-        } catch { /* skip unreadable URLs */ }
+          const canvas = document.createElement('canvas');
+          canvas.width = imgEl.naturalWidth || imgEl.width || 512;
+          canvas.height = imgEl.naturalHeight || imgEl.height || 512;
+          const ctx = canvas.getContext('2d');
+          if (ctx && canvas.width > 0 && canvas.height > 0) {
+            ctx.drawImage(imgEl, 0, 0);
+            const dataUrl = canvas.toDataURL('image/png', 1.0);
+            if (dataUrl && dataUrl.length > 100 && !dataUrl.startsWith('data:,')) {
+              dataUrls.push(dataUrl);
+              continue;
+            }
+          }
+        } catch { /* Canvas tainted — try fetch fallback */ }
+
+        // Strategy 2: Fetch & FileReader
+        const src = imgEl.currentSrc || imgEl.src || '';
+        if (src) {
+          try {
+            const res = await fetch(src);
+            if (res.ok) {
+              const blob = await res.blob();
+              const dataUrl = await blobToDataUrl(blob);
+              if (dataUrl && dataUrl.length > 50) {
+                dataUrls.push(dataUrl);
+                continue;
+              }
+            }
+          } catch { /* Fetch failed */ }
+          dataUrls.push(src);
+        }
       } else if (vidEl) {
         const src = vidEl.currentSrc || vidEl.src;
-        if (src && src.startsWith('https://')) dataUrls.push(src);
+        if (src) dataUrls.push(src);
       }
     }
     return dataUrls;
