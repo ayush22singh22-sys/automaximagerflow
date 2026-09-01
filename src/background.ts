@@ -504,7 +504,7 @@ async function finalizeRun(app: AppState): Promise<void> {
   await saveAndSync(app);
 }
 
-function makeDownloadRecords(result: FlowResult, job: Job, run: Run): DownloadRecord[] {
+function makeDownloadRecords(result: FlowResult, job: Job, run: Run, jobIndex?: number): DownloadRecord[] {
   const attrs = resolveSettings(run.settings, job.settings);
   const genType = attrs.genType;
   const base = jobBaseName(job.name, job.prompt);
@@ -512,8 +512,8 @@ function makeDownloadRecords(result: FlowResult, job: Job, run: Run): DownloadRe
     ...result.downloadUrls,
     ...result.previewUrls.filter((u) => u.startsWith('data:') || u.startsWith('https://')),
   ].filter(Boolean));
-  const jobIdx = run.jobs.findIndex((j) => j.id === job.id);
-  const safeIndex = jobIdx >= 0 ? jobIdx + 1 : 1;
+  const idx = jobIndex ?? run.jobs.findIndex((j) => j.id === job.id);
+  const safeIndex = idx >= 0 ? idx + 1 : 1;
 
   return urls.map((url, i) => ({
     url,
@@ -584,6 +584,7 @@ async function handleInbound(msg: InboundMessage): Promise<void> {
     return;
   }
   if (msg.kind !== 'job-result') return;
+
   const app = await loadApp();
   const run = app.currentRun;
   if (app.activeJobId !== null && app.activeJobId !== msg.id) return;
@@ -593,20 +594,62 @@ async function handleInbound(msg: InboundMessage): Promise<void> {
   app.activeJobId = null;
 
   if (msg.ok) {
-    job.tempResult = msg.result;
-    job.genSummary = msg.result.summary;
-    job.downloads = makeDownloadRecords(msg.result, job, run);
-    console.log('[handleInbound] created download records:', job.downloads);
-    job.state = 'downloading';
-    app.jobsSinceRefresh += 1;
-    // Save app state WITHOUT data: URLs (they can be MBs each and blow the
-    // 10 MB chrome.storage.local quota). We download first, then persist the
-    // resulting local path which is tiny.
-    const appToSave = stripDataUrls(app);
-    await saveApp(appToSave).catch(noop);
-    setStatus(buildStatus(app));
-    push(app);
-    await downloadPhase(app, job);
+    isDownloadInProgress = true; // 🔒 LOCK — no new job will start in Flow
+    try {
+      // STEP A: Store result in tempResult immediately
+      job.tempResult = msg.result;
+      job.genSummary = msg.result.summary;
+      job.state = 'downloading';
+      app.jobsSinceRefresh += 1;
+
+      // STEP B: Derive filename with safe jobIndex
+      const jobIndex = run.jobs.findIndex((j) => j.id === job.id);
+      job.downloads = makeDownloadRecords(job.tempResult, job, run, jobIndex);
+      console.log('[handleInbound] created download records:', job.downloads);
+
+      const appToSave = stripDataUrls(app);
+      await saveApp(appToSave).catch(noop);
+      setStatus(buildStatus(app));
+      push(app);
+
+      // STEP C: Download sequentially one-by-one from temp payload
+      let allSuccess = true;
+      for (const rec of job.downloads) {
+        if (rec.state === 'completed') continue;
+        rec.state = 'running';
+        await saveJob(run, job).catch(noop);
+        const path = outputPath(run.dirName, rec.fileName);
+        const outcome = await downloadTo(path, rec.url);
+        if (outcome.ok) {
+          rec.state = 'completed';
+          rec.localPath = outcome.localPath;
+          if (rec.url.startsWith('data:')) rec.url = '';
+        } else {
+          rec.state = 'failed';
+          rec.error = outcome.error;
+          allSuccess = false;
+        }
+        await saveJob(run, job).catch(noop);
+      }
+
+      // STEP D: Set state based on result
+      if (allSuccess && job.downloads.length > 0) {
+        job.state = 'completed';
+        job.finishedAt = Date.now();
+        job.tempResult = undefined; // Success: clear tempResult
+      } else {
+        job.state = 'failed-paused'; // Fail: keep tempResult for retry
+        job.finishedAt = Date.now();
+      }
+      await saveApp(stripDataUrls(app)).catch(noop);
+      setStatus(buildStatus(app));
+      push(app);
+    } finally {
+      isDownloadInProgress = false; // 🔓 UNLOCK
+    }
+
+    // STEP E: Now trigger next job
+    await advance(app);
     return;
   }
 
@@ -618,6 +661,13 @@ async function handleInbound(msg: InboundMessage): Promise<void> {
   setStatus(buildStatus(app));
   push(app);
   await advance(app);
+}
+
+async function retryJob(jobId: string): Promise<void> {
+  const app = await loadApp();
+  const job = app.currentRun.jobs.find((j) => j.id === jobId);
+  if (!job || !job.tempResult) return;
+  await handleInbound({ kind: 'job-result', ok: true, id: jobId, result: job.tempResult });
 }
 
 async function handleAction(action: Action): Promise<AppState> {
