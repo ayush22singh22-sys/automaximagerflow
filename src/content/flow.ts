@@ -463,12 +463,12 @@ class FlowDriver {
       payload.ok
         ? { kind: 'job-result', ok: true, id: this.job.id, result: payload.result }
         : { kind: 'job-result', ok: false, id: this.job.id, error: payload.error };
-    void chrome.runtime.sendMessage(message).catch(noop);
+    void safeSendMessage(message);
   }
 
   private progress(message: string): void {
     const update: InboundMessage = { kind: 'job-progress', id: this.job.id, message };
-    void chrome.runtime.sendMessage(update).catch(noop);
+    void safeSendMessage(update);
   }
 
   async run(): Promise<void> {
@@ -609,12 +609,12 @@ class FlowDriver {
     // Clear any existing text first.
     setValue(input, '');
     const rect = input.getBoundingClientRect();
-    const response = await chrome.runtime.sendMessage({
+    const response = (await safeSendMessage({
       kind: 'native-replace-text',
       text: this.job.prompt,
       x: rect.left + rect.width / 2,
       y: rect.top + rect.height / 2,
-    }) as {
+    })) as {
       ok?: boolean;
       error?: string;
     } | undefined;
@@ -640,11 +640,11 @@ class FlowDriver {
 
     // Phase 3 — click it.
     const rect = gen.getBoundingClientRect();
-    const response = await chrome.runtime.sendMessage({
+    const response = (await safeSendMessage({
       kind: 'native-click',
       x: rect.left + rect.width / 2,
       y: rect.top + rect.height / 2,
-    }) as { ok?: boolean; error?: string } | undefined;
+    })) as { ok?: boolean; error?: string } | undefined;
     if (!response?.ok) {
       throw new Error(`Flow did not accept the Generate click: ${response?.error ?? 'no response from extension'}`);
     }
@@ -1103,8 +1103,28 @@ chrome.runtime.onMessage.addListener((msg: OutboundMessage, _sender, sendRespons
   }
 });
 
+function safeSendMessage<T = unknown>(message: unknown): Promise<T | undefined> {
+  return new Promise((resolve) => {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.id) {
+        return resolve(undefined);
+      }
+      chrome.runtime.sendMessage(message, (response) => {
+        if (chrome.runtime.lastError) {
+          // Silence unhandled lastError warning when SW is sleeping or context invalidated
+          return resolve(undefined);
+        }
+        resolve(response as T);
+      });
+    } catch {
+      // Synchronous context invalidation error
+      resolve(undefined);
+    }
+  });
+}
+
 function noop(): void { /* ignore */ }
 
 // Announce availability so the background can reconnect cheaply after reload.
 const ready: InboundMessage = { kind: 'flow-ready' };
-void chrome.runtime.sendMessage(ready).catch(noop);
+void safeSendMessage(ready);
