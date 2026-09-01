@@ -743,29 +743,40 @@ class FlowDriver {
   }
 
   /**
-   * Convert image elements in the result to data: URLs so the background SW
-   * can download them reliably (blob: URLs are tab-scoped and expire).
-   * Returns an array of data: URL strings.
+   * Fetch each result image as a base64 data: URL.
+   *
+   * Content scripts run in the tab context and CAN access blob: URLs created
+   * by the page (they are tab-scoped). The background service worker CANNOT.
+   * So we resolve here and send data: URLs to the background for downloading.
    */
   private async collectDataUrls(): Promise<string[]> {
     const results = this.resultElements();
     const newResults = results.slice(this.baselineResultCount);
     const dataUrls: string[] = [];
+
+    const blobToDataUrl = (blob: Blob): Promise<string> =>
+      new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+      });
+
     for (const el of newResults) {
       const imgEl = el instanceof HTMLImageElement ? el : el.querySelector<HTMLImageElement>('img');
       const vidEl = el instanceof HTMLVideoElement ? el : el.querySelector<HTMLVideoElement>('video');
+
       if (imgEl) {
+        const src = imgEl.currentSrc || imgEl.src || '';
+        if (!src) continue;
         try {
-          const canvas = document.createElement('canvas');
-          canvas.width = imgEl.naturalWidth || imgEl.width || 512;
-          canvas.height = imgEl.naturalHeight || imgEl.height || 512;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(imgEl, 0, 0);
-            const dataUrl = canvas.toDataURL('image/png', 1.0);
-            if (dataUrl && dataUrl !== 'data:,') dataUrls.push(dataUrl);
-          }
-        } catch { /* cross-origin — fall through */ }
+          // fetch() works for both blob: and https: URLs in the content script.
+          const res = await fetch(src);
+          if (!res.ok) continue;
+          const blob = await res.blob();
+          const dataUrl = await blobToDataUrl(blob);
+          if (dataUrl && dataUrl.length > 50) dataUrls.push(dataUrl);
+        } catch { /* skip unreadable URLs */ }
       } else if (vidEl) {
         const src = vidEl.currentSrc || vidEl.src;
         if (src && src.startsWith('https://')) dataUrls.push(src);

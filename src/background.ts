@@ -492,7 +492,12 @@ function makeDownloadRecords(result: FlowResult, job: Job, run: Run): DownloadRe
   const attrs = resolveSettings(run.settings, job.settings);
   const genType = attrs.genType;
   const base = jobBaseName(job.name, job.prompt);
-  const urls = dedupe([...result.downloadUrls, ...result.previewUrls].filter(Boolean));
+  const urls = dedupe([
+    ...result.downloadUrls,
+    // previewUrls may contain blob: URLs (tab-scoped, inaccessible from SW).
+    // Only include them if they are data: or https: URLs.
+    ...result.previewUrls.filter((u) => u.startsWith('data:') || u.startsWith('https://')),
+  ].filter(Boolean));
   const jobIdx = run.jobs.findIndex((j) => j.id === job.id);
   const jobIndex = jobIdx >= 0 ? jobIdx + 1 : 1;
 
