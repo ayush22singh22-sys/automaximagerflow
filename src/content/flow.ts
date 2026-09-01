@@ -870,6 +870,32 @@ class FlowDriver {
 }
 
 /**
+ * Direct DOM Anchor Download helper (triggers a programmatic click on an <a download> element).
+ */
+async function downloadDirectlyInDom(dataUrl: string, filename: string): Promise<boolean> {
+  try {
+    const res = await fetch(dataUrl);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    console.log(`⬇️ Direct DOM anchor download triggered: ${filename}`);
+    link.click();
+    setTimeout(() => {
+      if (document.body.contains(link)) document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }, 2000);
+    return true;
+  } catch (err) {
+    console.error('Direct DOM download failed:', err);
+    return false;
+  }
+}
+
+/**
  * Removes the Gemini / Google ImageFX watermark from an image canvas.
  * The watermark in Google Imagen / Flow is located in the bottom-right corner.
  */
