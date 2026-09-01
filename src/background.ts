@@ -497,19 +497,17 @@ function makeDownloadRecords(result: FlowResult, job: Job, run: Run): DownloadRe
   const base = jobBaseName(job.name, job.prompt);
   const urls = dedupe([
     ...result.downloadUrls,
-    // previewUrls may contain blob: URLs (tab-scoped, inaccessible from SW).
-    // Only include them if they are data: or https: URLs.
     ...result.previewUrls.filter((u) => u.startsWith('data:') || u.startsWith('https://')),
   ].filter(Boolean));
   const jobIdx = run.jobs.findIndex((j) => j.id === job.id);
-  const jobIndex = jobIdx >= 0 ? jobIdx + 1 : 1;
+  const safeIndex = jobIdx >= 0 ? jobIdx + 1 : 1;
 
   return urls.map((url, i) => ({
     url,
     fileName: outputFileName(
       genType,
       base,
-      jobIndex,
+      safeIndex,
       job.version,
       urls.length > 1 ? i + 1 : undefined,
     ),
@@ -555,6 +553,7 @@ function stripDataUrls(app: AppState): AppState {
 }
 
 async function handleInbound(msg: InboundMessage): Promise<void> {
+  console.log('[handleInbound] received message:', msg.kind, 'id' in msg ? msg.id : '');
   if (msg.kind === 'flow-ready') {
     await findFlowTab();
     // Content script just loaded — resume the queue if it was waiting.
@@ -583,6 +582,7 @@ async function handleInbound(msg: InboundMessage): Promise<void> {
   if (msg.ok) {
     job.genSummary = msg.result.summary;
     job.downloads = makeDownloadRecords(msg.result, job, run);
+    console.log('[handleInbound] created download records:', job.downloads);
     job.state = 'downloading';
     app.jobsSinceRefresh += 1;
     // Save app state WITHOUT data: URLs (they can be MBs each and blow the
@@ -737,6 +737,8 @@ void (async () => {
 
 function noop(): void { /* ignore */ }
 
+let processingChain: Promise<void> = Promise.resolve();
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const action = msg as Action;
   if (action && typeof action.type === 'string' && ACTIONS.includes(action.type as Action['type'])) {
@@ -780,8 +782,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (inbound && (inbound.kind === 'job-result' || inbound.kind === 'job-progress' || inbound.kind === 'flow-ready')) {
-    void handleInbound(inbound).catch(() => {
-      /* storage error — ignore, next tick will re-read */
-    });
+    processingChain = processingChain
+      .then(() => handleInbound(inbound))
+      .catch((err) => console.error('[handleInbound] failed:', err));
   }
 });

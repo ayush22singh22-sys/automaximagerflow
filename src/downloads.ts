@@ -25,23 +25,22 @@ export function downloadTo(filename: string, url: string, timeoutMs = 120000): P
     const finish = (outcome: DownloadOutcome): void => {
       if (settled) return;
       settled = true;
+      chrome.downloads.onChanged.removeListener(onChanged);
       clearInterval(interval);
       clearTimeout(timer);
       resolve(outcome);
     };
 
-    const onChanged = (delta: chrome.downloads.DownloadDelta): void => {
-      if (delta.id !== downloadId) return;
+    function onChanged(delta: chrome.downloads.DownloadDelta): void {
+      if (downloadId < 0 || delta.id !== downloadId) return;
       const st = delta.state;
       if (!st || typeof st.current !== 'string') return;
       if (st.current === 'complete') {
-        chrome.downloads.onChanged.removeListener(onChanged);
         finish({ ok: true, localPath: delta.filename && typeof delta.filename.current === 'string' ? delta.filename.current : undefined });
       } else if (st.current === 'interrupted') {
-        chrome.downloads.onChanged.removeListener(onChanged);
         finish({ ok: false, error: `Download interrupted${delta.error?.current ? ` (${delta.error.current})` : ''}` });
       }
-    };
+    }
 
     const timer = setTimeout(() => finish({ ok: false, error: 'Download timed out' }), timeoutMs);
 
@@ -55,6 +54,8 @@ export function downloadTo(filename: string, url: string, timeoutMs = 120000): P
       });
     }, 1000);
 
+    chrome.downloads.onChanged.addListener(onChanged);
+
     chrome.downloads.download(
       { url, filename, conflictAction: 'uniquify', saveAs: false },
       (id?: number) => {
@@ -63,7 +64,6 @@ export function downloadTo(filename: string, url: string, timeoutMs = 120000): P
           return;
         }
         downloadId = id;
-        chrome.downloads.onChanged.addListener(onChanged);
       },
     );
   });
