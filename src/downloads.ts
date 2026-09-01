@@ -17,7 +17,7 @@ export interface DownloadOutcome {
  * Download `url` to `filename` (relative path under the Downloads dir).
  * Resolves when the download reaches a terminal state.
  */
-export function downloadTo(filename: string, url: string, timeoutMs = 120000): Promise<DownloadOutcome> {
+function downloadAttempt(filename: string, url: string, timeoutMs: number): Promise<DownloadOutcome> {
   return new Promise((resolve) => {
     let settled = false;
     let downloadId = -1;
@@ -67,4 +67,34 @@ export function downloadTo(filename: string, url: string, timeoutMs = 120000): P
       },
     );
   });
+}
+
+/**
+ * Download `url` to `filename` (relative path under the Downloads dir).
+ * Supports automatic Blob ObjectURL fallback for data: URLs if direct download fails.
+ */
+export async function downloadTo(filename: string, url: string, timeoutMs = 120000): Promise<DownloadOutcome> {
+  // Option 1: Direct download
+  const outcome = await downloadAttempt(filename, url, timeoutMs);
+  if (outcome.ok) return outcome;
+
+  // Option 2: Alternative Blob ObjectURL method fallback for data: URLs
+  if (url.startsWith('data:')) {
+    let blobUrl: string | null = null;
+    try {
+      console.log('🔄 Option 1 failed, trying Blob ObjectURL alternative download...');
+      const res = await fetch(url);
+      const blob = await res.blob();
+      blobUrl = URL.createObjectURL(blob);
+      const altOutcome = await downloadAttempt(filename, blobUrl, timeoutMs);
+      if (altOutcome.ok) console.log('✅ Blob ObjectURL alternative download succeeded');
+      return altOutcome;
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+    }
+  }
+
+  return outcome;
 }
