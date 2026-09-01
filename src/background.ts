@@ -491,7 +491,7 @@ async function finalizeRun(app: AppState): Promise<void> {
 function makeDownloadRecords(result: FlowResult, job: Job, run: Run): DownloadRecord[] {
   const attrs = resolveSettings(run.settings, job.settings);
   const genType = attrs.genType;
-  const base = jobBaseName(job.name);
+  const base = jobBaseName(job.name, job.prompt);
   const urls = dedupe([...result.downloadUrls, ...result.previewUrls].filter(Boolean));
   const jobIdx = run.jobs.findIndex((j) => j.id === job.id);
   const jobIndex = jobIdx >= 0 ? jobIdx + 1 : 1;

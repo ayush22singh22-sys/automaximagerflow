@@ -77,10 +77,19 @@ export function resolvePromptRefs(prompt: string, references: Reference[]): Pars
 }
 
 /**
- * Build the output file base name for a job: #name if present, else 'result'.
+ * Build the output file base name for a job.
+ * Uses the #name token if present; otherwise derives the name from the prompt
+ * text (cleaned, sanitized, capped at 60 chars). Falls back to 'result' only
+ * if the prompt is empty or produces an empty string after sanitization.
  */
-export function jobBaseName(name: string | undefined): string {
-  return name ? sanitizeFileName(name) : 'result';
+export function jobBaseName(name: string | undefined, prompt?: string): string {
+  if (name) return sanitizeFileName(name);
+  if (prompt) {
+    const cleaned = cleanPrompt(prompt);
+    const sanitized = sanitizeFileName(cleaned.slice(0, 60));
+    if (sanitized && sanitized !== 'result') return sanitized;
+  }
+  return 'result';
 }
 
 /** Extension for the output: images .png, videos .mp4. */

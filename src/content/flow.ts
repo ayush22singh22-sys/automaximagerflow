@@ -761,20 +761,6 @@ class FlowDriver {
         // Wait until the expected count of new results arrives.
         if (newResults >= Math.max(1, this.job.settings.count)) {
           this.resultCount = newResults;
-
-          // Watermark removal post-processing on downloaded images
-          if (this.job.settings.genType === 'image' && this.downloadUrls.length > 0) {
-            try {
-              const cleanUrls: string[] = [];
-              for (const u of this.downloadUrls) {
-                const clean = await processImageWatermark(u);
-                cleanUrls.push(clean);
-              }
-              this.downloadUrls = cleanUrls;
-            } catch {
-              /* keep original downloadUrls if canvas processing fails */
-            }
-          }
           return;
         }
       }
