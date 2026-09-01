@@ -1,6 +1,6 @@
-import type { Action, AppState, GenSettings, Job, Run } from './types.js';
+import type { Action, AppState, DownloadRecord, GenSettings, Job, Run } from './types.js';
 import { defaultSettings, jobId, runId } from './types.js';
-import { parseNameToken, resolvePromptRefs, runDirName } from './naming.js';
+import { jobBaseName, outputFileName, parseNameToken, resolvePromptRefs, runDirName } from './naming.js';
 
 const HISTORY_PER_MODE = 10;
 
@@ -65,13 +65,31 @@ export function reduceApp(state: AppState, action: Action): AppState {
       break;
     case 'retryDownloads':
       for (const job of state.currentRun.jobs) {
-        if (job.state === 'download-failed') {
+        if (job.state === 'download-failed' || job.state === 'failed-paused') {
           job.state = 'downloading';
           for (const d of job.downloads) if (d.state !== 'completed') d.state = 'pending';
           job.error = undefined;
         }
       }
       break;
+    case 'retryJob': {
+      const job = find(state.currentRun, action.id);
+      if (job && (job.state === 'failed' || job.state === 'download-failed' || job.state === 'failed-paused')) {
+        if (job.tempResult || (job.downloads && job.downloads.length > 0)) {
+          job.state = 'downloading';
+          if (job.tempResult && job.downloads.length === 0) {
+            // Re-create download records from preserved tempResult
+            job.downloads = makeDownloadRecordsForJob(job, state.currentRun);
+          } else {
+            for (const d of job.downloads) if (d.state !== 'completed') d.state = 'pending';
+          }
+          job.error = undefined;
+        } else {
+          requeue(job);
+        }
+      }
+      break;
+    }
     case 'regenerate': {
       const job = find(state.currentRun, action.id);
       if (job && (job.state === 'completed' || job.state === 'download-failed' || job.state === 'failed')) {
@@ -271,6 +289,34 @@ export function newRun(runNumber: number, settings: GenSettings): Run {
     createdAt: Date.now(),
     jobs: [],
   };
+}
+
+export function makeDownloadRecordsForJob(job: Job, run: Run): DownloadRecord[] {
+  if (!job.tempResult) return job.downloads;
+  const attrs = resolveSettings(run.settings, job.settings);
+  const genType = attrs.genType;
+  const base = jobBaseName(job.name, job.prompt);
+  const result = job.tempResult;
+  const urls = Array.from(new Set([
+    ...result.downloadUrls,
+    ...result.previewUrls.filter((u) => u.startsWith('data:') || u.startsWith('https://')),
+  ].filter(Boolean)));
+  const jobIdx = run.jobs.findIndex((j) => j.id === job.id);
+  const safeIndex = jobIdx >= 0 ? jobIdx + 1 : 1;
+
+  return urls.map((url, i) => ({
+    url,
+    fileName: outputFileName(
+      genType,
+      base,
+      safeIndex,
+      job.version,
+      urls.length > 1 ? i + 1 : undefined,
+    ),
+    state: 'pending' as const,
+    attempt: 0,
+    version: job.version,
+  }));
 }
 
 /** Merge per-job override onto global settings. */

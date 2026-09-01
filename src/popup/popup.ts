@@ -103,6 +103,7 @@ const ROLE_LABEL: Record<RefRole, string> = { start: 'Start', end: 'End', refere
 const STATE_LABEL: Record<string, string> = {
   queued: 'Queued', running: 'Running', downloading: 'Downloading',
   completed: 'Completed', failed: 'Failed', 'download-failed': 'DL failed', skipped: 'Skipped',
+  'failed-paused': 'DL paused',
 };
 
 function send(action: Action): Promise<Ui> {
@@ -391,11 +392,11 @@ function jobRow(job: Job, refs: Reference[], total: number): HTMLElement {
   if (job.state === 'queued' || job.state === 'skipped') {
     actions.appendChild(actionBtn('Skip', () => void onSkip(job.id)));
   }
-  if (job.state === 'completed' || job.state === 'download-failed' || job.state === 'failed') {
+  if (job.state === 'completed' || job.state === 'download-failed' || job.state === 'failed' || job.state === 'failed-paused') {
     actions.appendChild(actionBtn('Re-gen', () => void onRegenerate(job.id)));
   }
-  if (job.state === 'download-failed' && job.downloads.some((d) => d.state === 'failed')) {
-    actions.appendChild(actionBtn('Retry DL', () => void onRetryDownloads()));
+  if (job.state === 'failed-paused' || job.state === 'download-failed' || (job.downloads && job.downloads.some((d) => d.state === 'failed'))) {
+    actions.appendChild(actionBtn('Retry DL', () => void runAction({ type: 'retryJob', id: job.id })));
   }
 
   meta.appendChild(badge);

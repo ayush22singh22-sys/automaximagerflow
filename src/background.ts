@@ -310,7 +310,10 @@ function waitForTabComplete(tabId: number): Promise<boolean> {
   });
 }
 
+let isDownloadInProgress = false;
+
 async function advance(app: AppState): Promise<void> {
+  if (isDownloadInProgress) return;
   if (refreshing) return;
   if (!app.running || app.paused) return;
   if (app.activeJobId) return;
@@ -459,24 +462,34 @@ async function saveJob(run: Run, job: Job): Promise<void> {
 }
 
 async function downloadPhase(app: AppState, job: Job): Promise<void> {
-  const run = app.currentRun;
-  job.state = 'downloading';
-  job.startedAt = job.startedAt ?? Date.now();
-  job.error = undefined;
-  await saveAndSync(app);
-
-  for (const record of job.downloads) {
-    if (record.state === 'completed') continue;
-    await downloadUrlWithRetry(run, job, record);
-  }
-
-  const allOk = job.downloads.length > 0 && job.downloads.every((d) => d.state === 'completed');
-  job.state = allOk ? 'completed' : 'download-failed';
-  if (allOk) {
-    job.finishedAt = Date.now();
+  isDownloadInProgress = true;
+  try {
+    const run = app.currentRun;
+    job.state = 'downloading';
+    job.startedAt = job.startedAt ?? Date.now();
     job.error = undefined;
+    await saveAndSync(app);
+
+    // Sequential one-by-one download execution
+    for (const record of job.downloads) {
+      if (record.state === 'completed') continue;
+      await downloadUrlWithRetry(run, job, record);
+    }
+
+    const allOk = job.downloads.length > 0 && job.downloads.every((d) => d.state === 'completed');
+    if (allOk) {
+      job.state = 'completed';
+      job.finishedAt = Date.now();
+      job.error = undefined;
+      job.tempResult = undefined; // Clear tempResult only on success
+    } else {
+      job.state = 'failed-paused'; // Preserve tempResult for retry
+      job.finishedAt = Date.now();
+    }
+    await saveAndSync(app);
+  } finally {
+    isDownloadInProgress = false;
   }
-  await saveAndSync(app);
   await advance(app);
 }
 
@@ -580,6 +593,7 @@ async function handleInbound(msg: InboundMessage): Promise<void> {
   app.activeJobId = null;
 
   if (msg.ok) {
+    job.tempResult = msg.result;
     job.genSummary = msg.result.summary;
     job.downloads = makeDownloadRecords(msg.result, job, run);
     console.log('[handleInbound] created download records:', job.downloads);
@@ -693,7 +707,7 @@ function setupTabListeners(): void {
 
 const ACTIONS: Action['type'][] = [
   'state', 'add', 'delete', 'duplicateJob', 'moveJob', 'updateJob',
-  'retryFailed', 'retryDownloads', 'regenerate', 'skip',
+  'retryFailed', 'retryDownloads', 'retryJob', 'regenerate', 'skip',
   'start', 'pause', 'resume', 'stop', 'clearCurrent',
   'setSettings', 'setRefresh', 'addReference', 'deleteReference',
   'openRun', 'runAgain', 'deleteRun',

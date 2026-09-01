@@ -11,7 +11,8 @@ export type JobState =
   | 'completed'
   | 'failed'
   | 'skipped'
-  | 'download-failed';
+  | 'download-failed'
+  | 'failed-paused';
 
 export type DownloadState = 'pending' | 'running' | 'completed' | 'failed';
 
@@ -85,6 +86,8 @@ export interface Job {
   regenArchive?: DownloadRecord[];
   /** Human summary of the latest generation result. */
   genSummary?: string;
+  /** Preserved result payload for download retries without re-generating. */
+  tempResult?: FlowResult;
 }
 
 export interface Run {
@@ -133,6 +136,7 @@ export type Action =
   | { type: 'updateJob'; id: string; prompt?: string; settings?: Partial<GenSettings>; refs?: TaggedRef[]; name?: string }
   | { type: 'retryFailed' }
   | { type: 'retryDownloads' }
+  | { type: 'retryJob'; id: string }
   | { type: 'regenerate'; id: string }
   | { type: 'skip'; id: string }
   | { type: 'start' }
