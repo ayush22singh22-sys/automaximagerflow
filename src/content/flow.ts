@@ -712,7 +712,9 @@ class FlowDriver {
   private collectDownloadUrls(): string[] {
     const urls: string[] = [];
     const push = (u: string | null | undefined): void => {
-      if (u && urls.indexOf(u) < 0) urls.push(u);
+      // Only accept https:// URLs — blob: URLs are tab-scoped and cannot be
+      // downloaded from the background service worker context.
+      if (u && u.startsWith('https://') && urls.indexOf(u) < 0) urls.push(u);
     };
     for (const sel of selectors.downloadButton) {
       for (const el of all(sel)) {
@@ -735,10 +737,43 @@ class FlowDriver {
         push(vid.currentSrc || vid.src);
       }
       const src = (el as HTMLImageElement | HTMLVideoElement).src;
-      if (src && (src.startsWith('blob:') || src.startsWith('https://'))) push(src);
+      if (src && src.startsWith('https://')) push(src);
     }
     return urls;
   }
+
+  /**
+   * Convert image elements in the result to data: URLs so the background SW
+   * can download them reliably (blob: URLs are tab-scoped and expire).
+   * Returns an array of data: URL strings.
+   */
+  private async collectDataUrls(): Promise<string[]> {
+    const results = this.resultElements();
+    const newResults = results.slice(this.baselineResultCount);
+    const dataUrls: string[] = [];
+    for (const el of newResults) {
+      const imgEl = el instanceof HTMLImageElement ? el : el.querySelector<HTMLImageElement>('img');
+      const vidEl = el instanceof HTMLVideoElement ? el : el.querySelector<HTMLVideoElement>('video');
+      if (imgEl) {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = imgEl.naturalWidth || imgEl.width || 512;
+          canvas.height = imgEl.naturalHeight || imgEl.height || 512;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(imgEl, 0, 0);
+            const dataUrl = canvas.toDataURL('image/png', 1.0);
+            if (dataUrl && dataUrl !== 'data:,') dataUrls.push(dataUrl);
+          }
+        } catch { /* cross-origin — fall through */ }
+      } else if (vidEl) {
+        const src = vidEl.currentSrc || vidEl.src;
+        if (src && src.startsWith('https://')) dataUrls.push(src);
+      }
+    }
+    return dataUrls;
+  }
+
 
   // Wait for the result count to increase from the snapshot captured directly
   // before Generate was clicked. This prevents both false positives from an
@@ -761,6 +796,16 @@ class FlowDriver {
         // Wait until the expected count of new results arrives.
         if (newResults >= Math.max(1, this.job.settings.count)) {
           this.resultCount = newResults;
+
+          // If no https:// download URLs found, fall back to canvas data: URLs.
+          // This handles blob: URL images which expire and can't be accessed
+          // from the background service worker context.
+          if (this.downloadUrls.length === 0) {
+            try {
+              this.downloadUrls = await this.collectDataUrls();
+            } catch { /* keep empty — background will use previewUrls */ }
+          }
+
           return;
         }
       }
