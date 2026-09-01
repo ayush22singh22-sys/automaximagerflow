@@ -3,7 +3,7 @@
   "name": "TryAIToday Automator",
   "version": "0.4.0",
   "description": "Local-only queue that drives prompts through your open Google Flow session.",
-  "permissions": ["storage", "tabs", "downloads", "alarms", "scripting", "activeTab", "debugger"],
+  "permissions": ["storage", "unlimitedStorage", "tabs", "downloads", "alarms", "scripting", "activeTab", "debugger"],
   "host_permissions": [
     "<all_urls>",
     "https://labs.google/*",

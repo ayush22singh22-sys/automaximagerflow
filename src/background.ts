@@ -428,19 +428,22 @@ async function downloadUrlWithRetry(run: Run, job: Job, record: DownloadRecord):
     record.state = 'running';
     record.attempt = attempt;
     record.error = undefined;
-    await saveJob(run, job);
+    await saveJob(run, job).catch(noop);
     const path = outputPath(run.dirName, record.fileName);
     const outcome = await downloadTo(path, record.url);
     if (outcome.ok) {
       record.state = 'completed';
       record.localPath = outcome.localPath;
       record.error = undefined;
-      await saveJob(run, job);
+      // Clear data: URL after download — it can be several MB and would
+      // exhaust chrome.storage.local quota across many jobs.
+      if (record.url.startsWith('data:')) record.url = '';
+      await saveJob(run, job).catch(noop);
       return;
     }
     record.error = outcome.error;
     record.state = 'failed';
-    await saveJob(run, job);
+    await saveJob(run, job).catch(noop);
     if (attempt < MAX_DOWNLOAD_ATTEMPTS) await delay(800 * attempt);
   }
 }
@@ -520,6 +523,37 @@ function dedupe(list: string[]): string[] {
   return Array.from(new Set(list));
 }
 
+/**
+ * Deep-clone app state replacing any data: URLs in download records with ''.
+ * Used before persisting to chrome.storage.local to avoid exhausting the
+ * default 10 MB quota with large base64 image payloads.
+ */
+function stripDataUrls(app: AppState): AppState {
+  return {
+    ...app,
+    currentRun: {
+      ...app.currentRun,
+      jobs: app.currentRun.jobs.map((job) => ({
+        ...job,
+        downloads: job.downloads.map((d) => ({
+          ...d,
+          url: d.url.startsWith('data:') ? '' : d.url,
+        })),
+      })),
+    },
+    history: app.history.map((run) => ({
+      ...run,
+      jobs: run.jobs.map((job) => ({
+        ...job,
+        downloads: job.downloads.map((d) => ({
+          ...d,
+          url: d.url.startsWith('data:') ? '' : d.url,
+        })),
+      })),
+    })),
+  };
+}
+
 async function handleInbound(msg: InboundMessage): Promise<void> {
   if (msg.kind === 'flow-ready') {
     await findFlowTab();
@@ -551,7 +585,11 @@ async function handleInbound(msg: InboundMessage): Promise<void> {
     job.downloads = makeDownloadRecords(msg.result, job, run);
     job.state = 'downloading';
     app.jobsSinceRefresh += 1;
-    await saveApp(app);
+    // Save app state WITHOUT data: URLs (they can be MBs each and blow the
+    // 10 MB chrome.storage.local quota). We download first, then persist the
+    // resulting local path which is tiny.
+    const appToSave = stripDataUrls(app);
+    await saveApp(appToSave).catch(noop);
     setStatus(buildStatus(app));
     push(app);
     await downloadPhase(app, job);
