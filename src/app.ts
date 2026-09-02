@@ -238,6 +238,11 @@ function cloneJobFresh(job: Job): Job {
 function addPrompts(state: AppState, promptChunks: string[]): void {
   const parsedPrompts: string[] = [];
 
+  /** True when a line is a standalone #name token (no other content). */
+  const isNameLine = (line: string): boolean =>
+    // Allow letters, digits, underscores, dots, hyphens AND colons (timecodes like #0:00).
+    /^#[A-Za-z0-9_.:-]+$/.test(line);
+
   for (const chunk of promptChunks) {
     const lines = chunk
       .split(/\r?\n/)
@@ -246,10 +251,15 @@ function addPrompts(state: AppState, promptChunks: string[]): void {
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      // Check if line is only a #name tag (e.g. #3-00 or #scene1)
-      if (/^#[A-Za-z0-9_-]+$/.test(line)) {
+
+      if (isNameLine(line)) {
+        // Collect ALL following non-name lines as the body of this prompt.
+        // This handles multi-line prompts like:
+        //   #0:00
+        //   Wide shot of...
+        //   STYLE: extremely simple...
         const promptLines: string[] = [];
-        while (i + 1 < lines.length && !/^#[A-Za-z0-9_-]+$/.test(lines[i + 1])) {
+        while (i + 1 < lines.length && !isNameLine(lines[i + 1])) {
           promptLines.push(lines[i + 1]);
           i++;
         }

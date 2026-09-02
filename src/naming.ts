@@ -17,10 +17,16 @@ export function sanitizeFileName(value: string): string {
   return s;
 }
 
-/** Extract the #name directive from a prompt, if present. */
+/** Extract the #name directive from a prompt, if present.
+ * Supports timecode-style IDs like #0:00 or #3:45 — colons are converted to
+ * hyphens so the filename stays filesystem-safe (e.g. 0-00, 3-45).
+ */
 export function parseNameToken(prompt: string): string | null {
-  const m = /#([A-Za-z0-9_.\-]+)/.exec(prompt);
-  return m ? sanitizeFileName(m[1]) : null;
+  const m = /#([A-Za-z0-9_.:–-]+)/.exec(prompt);
+  if (!m) return null;
+  // Normalise colons → hyphens (safe for all OS filesystems).
+  const name = m[1].replace(/:/g, '-');
+  return sanitizeFileName(name);
 }
 
 /** Strip #name and @reference/@start/@end tokens from the text typed into Flow. */
@@ -29,6 +35,9 @@ export function cleanPrompt(prompt: string): string {
     .replace(/#[A-Za-z0-9_.\-]+/g, '')
     .replace(/@(start|end|reference):[A-Za-z0-9_.-]+/g, '')
     .replace(/@[A-Za-z0-9_.-]+/g, '')
+    // Strip leading timecode patterns (e.g. :00  :30  01:30  1:00:00) that
+    // appear in shot lists right after the #name token is removed.
+    .replace(/^\s*\d{0,2}:\d{2}(:\d{2})?\s*/g, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
   return cleaned || prompt.trim();
