@@ -449,6 +449,10 @@ function dataUrlToFile(dataUrl: string): File | null {
   }
 }
 
+// Global set of all image URLs seen or downloaded in this tab session across jobs.
+// This prevents older generation images from ever being re-downloaded into later jobs.
+const sessionSeenUrls = new Set<string>();
+
 class FlowDriver {
   private readonly job: RunRequest;
   // Snapshot immediately before clicking Generate. Keeping this on the driver
@@ -490,13 +494,15 @@ class FlowDriver {
       this.progress('Typing the prompt into Flow…');
       await this.enterPrompt(input);
       this.progress('Waiting for Flow to enable Generate…');
-      this.baselineResultCount = this.resultElements().length;
+      const beforeResults = this.resultElements();
+      this.baselineResultCount = beforeResults.length;
       this.baselineUrls = new Set(
-        this.resultElements().map((el) => {
+        beforeResults.map((el) => {
           const img = el instanceof HTMLImageElement ? el : el.querySelector<HTMLImageElement>('img');
           return img ? (img.currentSrc || img.src || '') : '';
         }).filter(Boolean)
       );
+      for (const u of this.baselineUrls) sessionSeenUrls.add(u);
       await this.submitPrompt();
       this.progress('Generation submitted — waiting for the result…');
       await this.waitForResult();
@@ -709,64 +715,48 @@ class FlowDriver {
   // Only real AI-generated output images (>120px) pass through.
   private resultElements(): HTMLElement[] {
     const raw = selectors.result.map((s) => all(s)).flat().filter((e) => visible(e));
-    const seen = new Set<HTMLElement>();
+    const seenEl = new Set<HTMLElement>();
+    const seenSrc = new Set<string>();
     const unique: HTMLElement[] = [];
-    for (const el of raw) {
-      if (seen.has(el)) continue;
-      seen.add(el);
 
-      if (el instanceof HTMLImageElement) {
-        const src = el.currentSrc || el.src || '';
+    const process = (el: HTMLElement) => {
+      if (seenEl.has(el)) return;
+      seenEl.add(el);
+
+      const img = el instanceof HTMLImageElement ? el : el.querySelector<HTMLImageElement>('img');
+      const vid = el instanceof HTMLVideoElement ? el : el.querySelector<HTMLVideoElement>('video');
+      const media = img || vid;
+      if (!media || !visible(media)) return;
+
+      if (media instanceof HTMLImageElement) {
+        const src = media.currentSrc || media.src || '';
+        if (!src) return;
         // Skip Google profile avatar
-        if (src.includes('googleusercontent.com/a/')) continue;
+        if (src.includes('googleusercontent.com/a/')) return;
         // Skip tiny placeholder data URIs
-        if (src.startsWith('data:') && src.length < 100) continue;
-        // Skip tiny icons (< 120px)
-        const w = el.naturalWidth || el.width || 0;
-        const h = el.naturalHeight || el.height || 0;
-        if (w > 0 && w < 120) continue;
-        if (h > 0 && h < 120) continue;
-      }
-      if (el.closest('header, nav, [role="banner"], [aria-label*="Account" i], .gb_d')) continue;
+        if (src.startsWith('data:') && src.length < 100) return;
+        // Skip tiny icons / thumbnails (< 150px)
+        const w = media.naturalWidth || media.width || 0;
+        const h = media.naturalHeight || media.height || 0;
+        if (w > 0 && w < 150) return;
+        if (h > 0 && h < 150) return;
 
-      unique.push(el);
-    }
+        // Skip duplicates by src
+        if (seenSrc.has(src)) return;
+        seenSrc.add(src);
+      }
+
+      if (media.closest('header, nav, footer, [role="banner"], [role="navigation"], [aria-label*="Account" i], .gb_d')) return;
+
+      unique.push(media);
+    };
+
+    for (const el of raw) process(el);
 
     // FALLBACK: if CSS selectors found nothing, scan ALL visible images on the page.
-    // This handles cases where Flow/ImageFX updates its DOM and our selectors break.
     if (unique.length === 0) {
       const allImgs = Array.from(document.querySelectorAll<HTMLImageElement>('img'));
-      const fallback: HTMLElement[] = [];
-      for (const img of allImgs) {
-        if (!visible(img)) continue;
-        const src = img.currentSrc || img.src || '';
-        if (!src) continue;
-        // Skip avatars, icons, logos, tiny images
-        if (src.includes('googleusercontent.com/a/')) continue;
-        if (src.startsWith('data:') && src.length < 100) continue;
-        const w = img.naturalWidth || img.width || 0;
-        const h = img.naturalHeight || img.height || 0;
-        if (w > 0 && w < 150) continue;
-        if (h > 0 && h < 150) continue;
-        if (img.closest('header, nav, footer, [role="banner"], [role="navigation"], [aria-label*="Account" i], .gb_d')) continue;
-        fallback.push(img);
-      }
-      if (fallback.length > 0) {
-        console.log('[flow:resultElements] CSS selectors matched 0 — fallback found', fallback.length, 'image(s):',
-          fallback.map((el) => {
-            const img = el as HTMLImageElement;
-            return `${img.currentSrc || img.src} (${img.naturalWidth}x${img.naturalHeight})`;
-          })
-        );
-      } else {
-        // Log ALL images so we can diagnose selector issues
-        console.log('[flow:resultElements] ALL imgs on page:',
-          allImgs.filter((img) => visible(img)).map((img) =>
-            `${img.currentSrc || img.src || '(no src)'} vis=${visible(img)} ${img.naturalWidth}x${img.naturalHeight}`
-          )
-        );
-      }
-      return fallback;
+      for (const img of allImgs) process(img);
     }
 
     return unique;
@@ -892,7 +882,7 @@ class FlowDriver {
         if (src) dataUrls.push(src);
       }
     }
-    return dataUrls;
+    return Array.from(new Set(dataUrls));
   }
 
   // Detects new result via image URL change, count increase, or spinner completion lifecycle
@@ -915,19 +905,19 @@ class FlowDriver {
       const currentResults = this.resultElements();
 
       // Strategy A: Count increase
-      const newByCount = currentResults.length - this.baselineResultCount;
+      const newByCount = Math.max(0, currentResults.length - this.baselineResultCount);
 
-      // Strategy B: Image URL changed from baseline snapshot
+      // Strategy B: Image URL changed from baseline snapshot AND never seen before in this tab session
       const newByUrl = currentResults.filter((el) => {
         const img = el instanceof HTMLImageElement ? el : el.querySelector<HTMLImageElement>('img');
         const src = img ? (img.currentSrc || img.src || '') : '';
-        return src && !this.baselineUrls.has(src);
+        return src && !this.baselineUrls.has(src) && !sessionSeenUrls.has(src);
       });
 
       // Strategy C: Generation spinner ran and has now finished with rendered output
       const spinnerFinished = hasStartedGenerating && !this.generatingActive() && currentResults.length > 0;
 
-      const newResults = Math.max(newByCount, newByUrl.length, spinnerFinished ? currentResults.length : 0);
+      const newResults = Math.max(newByCount, newByUrl.length, spinnerFinished ? 1 : 0);
 
       // Debug log every 5 ticks (~4s) so we can trace what's happening
       if (debugTick % 5 === 1) {
@@ -953,27 +943,59 @@ class FlowDriver {
         // <img> element appears in the DOM, so we need to wait before reading src.
         await new Promise((r) => setTimeout(r, 1500));
 
-        const candidateElements = newByUrl.length > 0 ? newByUrl : (currentResults.slice(this.baselineResultCount).length > 0 ? currentResults.slice(this.baselineResultCount) : currentResults);
+        // Re-read fresh results after the settle delay
+        const settledResults = this.resultElements();
+        const settledNewByUrl = settledResults.filter((el) => {
+          const img = el instanceof HTMLImageElement ? el : el.querySelector<HTMLImageElement>('img');
+          const src = img ? (img.currentSrc || img.src || '') : '';
+          return src && !this.baselineUrls.has(src) && !sessionSeenUrls.has(src);
+        });
 
-        this.previewUrls = candidateElements.slice(0, 4).map((e) => {
+        // Maximum images per prompt is 4 in ImageFX / Google Flow
+        const maxImages = Math.min(4, Math.max(1, this.job.settings.count || 4));
+
+        let candidateElements: HTMLElement[];
+        if (settledNewByUrl.length > 0) {
+          // Take only the newest items, capped at maxImages
+          candidateElements = settledNewByUrl.slice(-maxImages);
+        } else if (settledResults.length > this.baselineResultCount) {
+          // Take the newest appended items, capped at maxImages
+          const addedCount = Math.min(maxImages, settledResults.length - this.baselineResultCount);
+          candidateElements = settledResults.slice(-addedCount);
+        } else {
+          // Fallback: take at most maxImages from the latest results
+          candidateElements = settledResults.slice(-maxImages);
+        }
+
+        // Register candidate URLs in sessionSeenUrls so they are NEVER re-downloaded in subsequent jobs
+        for (const el of candidateElements) {
+          const img = el instanceof HTMLImageElement ? el : el.querySelector<HTMLImageElement>('img');
+          const src = img ? (img.currentSrc || img.src || '') : '';
+          if (src) {
+            sessionSeenUrls.add(src);
+            this.baselineUrls.add(src);
+          }
+        }
+
+        this.previewUrls = candidateElements.map((e) => {
           const img = e instanceof HTMLImageElement ? e : e.querySelector<HTMLImageElement>('img');
           const url = img ? (img.currentSrc || img.src || '') : (e as HTMLImageElement).src ?? '';
           return url || (e.getAttribute('src') ?? '');
-        }).filter(Boolean);
+        }).filter(Boolean).slice(0, maxImages);
 
         // Always extract real canvas data: URLs from the generated images
         try {
           const dataUrls = await this.collectDataUrls(candidateElements);
           if (dataUrls.length > 0) {
-            this.downloadUrls = dataUrls;
+            this.downloadUrls = Array.from(new Set(dataUrls)).slice(0, maxImages);
           } else {
-            this.downloadUrls = this.collectDownloadUrls();
+            this.downloadUrls = this.collectDownloadUrls().slice(0, maxImages);
           }
         } catch {
-          this.downloadUrls = this.collectDownloadUrls();
+          this.downloadUrls = this.collectDownloadUrls().slice(0, maxImages);
         }
 
-        console.log(`[flow] Found ${this.downloadUrls.length} image result(s)`);
+        console.log(`[flow] Found ${this.downloadUrls.length} image result(s) (capped at ${maxImages})`);
         return;
       }
 

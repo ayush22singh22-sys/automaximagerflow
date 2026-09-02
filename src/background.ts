@@ -548,21 +548,21 @@ function makeDownloadRecords(result: FlowResult, job: Job, run: Run, jobIndex?: 
   const attrs = resolveSettings(run.settings, job.settings);
   const genType = attrs.genType;
   const base = jobBaseName(job.name, job.prompt);
-  const urls = dedupe([
-    ...result.downloadUrls,
-    ...result.previewUrls.filter((u) => u.startsWith('data:') || u.startsWith('https://')),
-  ].filter(Boolean));
+  const rawUrls = result.downloadUrls.length > 0 ? result.downloadUrls : result.previewUrls;
+  const urls = dedupe(rawUrls.filter((u) => u.startsWith('data:') || u.startsWith('https:') || u.startsWith('blob:')));
+  const maxAllowed = Math.min(4, Math.max(1, attrs.count || 4));
+  const cappedUrls = urls.slice(0, maxAllowed);
   const idx = jobIndex ?? run.jobs.findIndex((j) => j.id === job.id);
   const safeIndex = idx >= 0 ? idx + 1 : 1;
 
-  return urls.map((url, i) => ({
+  return cappedUrls.map((url, i) => ({
     url,
     fileName: outputFileName(
       genType,
       base,
       safeIndex,
       job.version,
-      urls.length > 1 ? i + 1 : undefined,
+      cappedUrls.length > 1 ? i + 1 : undefined,
     ),
     state: 'pending' as const,
     attempt: 0,

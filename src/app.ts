@@ -307,21 +307,21 @@ export function makeDownloadRecordsForJob(job: Job, run: Run): DownloadRecord[] 
   const genType = attrs.genType;
   const base = jobBaseName(job.name, job.prompt);
   const result = job.tempResult;
-  const urls = Array.from(new Set([
-    ...result.downloadUrls,
-    ...result.previewUrls.filter((u) => u.startsWith('data:') || u.startsWith('https://')),
-  ].filter(Boolean)));
+  const rawUrls = result.downloadUrls.length > 0 ? result.downloadUrls : result.previewUrls;
+  const urls = Array.from(new Set(rawUrls.filter((u) => u.startsWith('data:') || u.startsWith('https:') || u.startsWith('blob:'))));
+  const maxAllowed = Math.min(4, Math.max(1, attrs.count || 4));
+  const cappedUrls = urls.slice(0, maxAllowed);
   const jobIdx = run.jobs.findIndex((j) => j.id === job.id);
   const safeIndex = jobIdx >= 0 ? jobIdx + 1 : 1;
 
-  return urls.map((url, i) => ({
+  return cappedUrls.map((url, i) => ({
     url,
     fileName: outputFileName(
       genType,
       base,
       safeIndex,
       job.version,
-      urls.length > 1 ? i + 1 : undefined,
+      cappedUrls.length > 1 ? i + 1 : undefined,
     ),
     state: 'pending' as const,
     attempt: 0,
