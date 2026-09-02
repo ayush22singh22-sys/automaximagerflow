@@ -333,7 +333,9 @@ function jobRow(job: Job, refs: Reference[], total: number): HTMLElement {
     tag.textContent = `#${job.name}`;
     prompt.appendChild(tag);
     const cleanText = job.prompt
-      .replace(new RegExp(`^#${job.name}\\s*`), '')
+      // Remove the leading #token — use a generic pattern because job.name
+      // is sanitized (colons→hyphens) but the raw prompt still has colons.
+      .replace(/^#[A-Za-z0-9_.:–-]+\s*/, '')
       // Strip leading timecodes (:00  :30  01:30) from shot-list formatted prompts.
       .replace(/^\s*\d{0,2}:\d{2}(:\d{2})?\s*/, '')
       .trim();
