@@ -819,15 +819,20 @@ class FlowDriver {
     return dataUrls;
   }
 
-  // Detects new result either via new image element OR image URL change / replace
+  // Detects new result via image URL change, count increase, or spinner completion lifecycle
   private async waitForResult(): Promise<void> {
     const start = Date.now();
     const timeoutMs = 5 * 60 * 1000;
     const graceMs = 3000;              // Grace period: skip failure check during initial 3s
     let consecutiveFailureTicks = 0;   // Debounce counter for failure signals
     const requiredFailureTicks = 3;    // Require 3 consecutive failure ticks before throwing
+    let hasStartedGenerating = false;
 
     while (Date.now() - start < timeoutMs) {
+      if (this.generatingActive()) {
+        hasStartedGenerating = true;
+      }
+
       const currentResults = this.resultElements();
       
       // Strategy A: Count increase
@@ -840,13 +845,19 @@ class FlowDriver {
         return src && !this.baselineUrls.has(src);
       });
 
-      const newResults = Math.max(newByCount, newByUrl.length);
+      // Strategy C: Generation spinner ran and has now finished with rendered output
+      const spinnerFinished = hasStartedGenerating && !this.generatingActive() && currentResults.length > 0;
+
+      const newResults = Math.max(newByCount, newByUrl.length, spinnerFinished ? currentResults.length : 0);
 
       if (newResults > 0) {
         consecutiveFailureTicks = 0;
         this.resultCount = newResults;
         
-        const candidateElements = newByUrl.length > 0 ? newByUrl : currentResults.slice(this.baselineResultCount);
+        // Give image 500ms to paint fully onto canvas/DOM
+        await new Promise((r) => setTimeout(r, 500));
+
+        const candidateElements = newByUrl.length > 0 ? newByUrl : (currentResults.slice(this.baselineResultCount).length > 0 ? currentResults.slice(this.baselineResultCount) : currentResults);
 
         this.previewUrls = candidateElements.slice(0, 4).map((e) => {
           const img = e instanceof HTMLImageElement ? e : e.querySelector<HTMLImageElement>('img');
