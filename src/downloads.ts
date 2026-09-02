@@ -2,9 +2,8 @@
  * Downloads service (background only).
  *
  * Wraps chrome.downloads to download a generated result URL into the
- * organized TryAIToday/Run-…/ folder and resolve to the final local path when
- * the download completes. Filename collisions are prevented by Chrome's
- * "uniquify" conflict action.
+ * Downloads folder with a specific filename. Filename is enforced via
+ * onDeterminingFilename which is registered once at module load.
  */
 
 export interface DownloadOutcome {
@@ -13,10 +12,24 @@ export interface DownloadOutcome {
   error?: string;
 }
 
-/**
- * Download `url` to `filename` (relative path under the Downloads dir).
- * Resolves when the download reaches a terminal state.
- */
+// Pre-registered filename — set BEFORE calling chrome.downloads.download()
+// so onDeterminingFilename can pick it up synchronously without any race condition.
+let pendingFilename: string | null = null;
+
+// Register the listener ONCE at module load time.
+if (typeof chrome !== 'undefined' && chrome.downloads?.onDeterminingFilename) {
+  chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+    if (pendingFilename) {
+      const name = pendingFilename;
+      pendingFilename = null;
+      console.log(`[downloads] onDeterminingFilename → forcing filename: "${name}"`);
+      suggest({ filename: name, conflictAction: 'uniquify' });
+      // NOTE: Do NOT return true here — returning true causes Chrome to freeze
+      // waiting for a subsequent async suggest() that never comes.
+    }
+  });
+}
+
 function downloadAttempt(filename: string, url: string, timeoutMs: number): Promise<DownloadOutcome> {
   return new Promise((resolve) => {
     let settled = false;
@@ -25,6 +38,7 @@ function downloadAttempt(filename: string, url: string, timeoutMs: number): Prom
     const finish = (outcome: DownloadOutcome): void => {
       if (settled) return;
       settled = true;
+      pendingFilename = null;
       chrome.downloads.onChanged.removeListener(onChanged);
       clearInterval(interval);
       clearTimeout(timer);
@@ -36,7 +50,7 @@ function downloadAttempt(filename: string, url: string, timeoutMs: number): Prom
       const st = delta.state;
       if (!st || typeof st.current !== 'string') return;
       if (st.current === 'complete') {
-        finish({ ok: true, localPath: delta.filename && typeof delta.filename.current === 'string' ? delta.filename.current : undefined });
+        finish({ ok: true, localPath: delta.filename?.current ?? undefined });
       } else if (st.current === 'interrupted') {
         finish({ ok: false, error: `Download interrupted${delta.error?.current ? ` (${delta.error.current})` : ''}` });
       }
@@ -56,38 +70,45 @@ function downloadAttempt(filename: string, url: string, timeoutMs: number): Prom
 
     chrome.downloads.onChanged.addListener(onChanged);
 
+    // Set pendingFilename BEFORE calling chrome.downloads.download()
+    pendingFilename = filename;
+    console.log(`[downloads] Starting download → filename: "${filename}"`);
+
     chrome.downloads.download(
       { url, filename, conflictAction: 'uniquify', saveAs: false },
       (id?: number) => {
         if (chrome.runtime.lastError || id === undefined) {
+          pendingFilename = null;
           finish({ ok: false, error: String(chrome.runtime.lastError?.message ?? 'Download not started') });
           return;
         }
         downloadId = id;
+        console.log(`[downloads] Download started with id=${id}`);
       },
     );
   });
 }
 
 /**
- * Download `url` to `filename` (relative path under the Downloads dir).
- * Supports automatic Blob ObjectURL fallback for data: URLs if direct download fails.
+ * Download `url` saving it as `filename` in the Downloads folder.
+ * Method 1: Direct chrome.downloads (works for https:// and data: URLs).
+ * Method 2: Blob ObjectURL fallback (for data: URLs when Method 1 fails).
  */
 export async function downloadTo(filename: string, url: string, timeoutMs = 120000): Promise<DownloadOutcome> {
-  // Option 1: Direct download
+  // Method 1: Direct download
   const outcome = await downloadAttempt(filename, url, timeoutMs);
   if (outcome.ok) return outcome;
 
-  // Option 2: Alternative Blob ObjectURL method fallback for data: URLs
+  // Method 2: Blob ObjectURL fallback for data: URLs
   if (url.startsWith('data:')) {
     let blobUrl: string | null = null;
     try {
-      console.log('🔄 Option 1 failed, trying Blob ObjectURL alternative download...');
+      console.log('[downloads] Method 1 failed → trying Blob ObjectURL fallback...');
       const res = await fetch(url);
       const blob = await res.blob();
       blobUrl = URL.createObjectURL(blob);
       const altOutcome = await downloadAttempt(filename, blobUrl, timeoutMs);
-      if (altOutcome.ok) console.log('✅ Blob ObjectURL alternative download succeeded');
+      if (altOutcome.ok) console.log('[downloads] Blob ObjectURL fallback succeeded ✅');
       return altOutcome;
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };

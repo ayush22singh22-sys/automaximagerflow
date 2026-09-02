@@ -19,18 +19,19 @@ export function sanitizeFileName(value: string): string {
 
 /** Extract the #name directive from a prompt, if present. */
 export function parseNameToken(prompt: string): string | null {
-  const m = /#([A-Za-z0-9_-]+)/.exec(prompt);
+  const m = /#([A-Za-z0-9_.\-]+)/.exec(prompt);
   return m ? sanitizeFileName(m[1]) : null;
 }
 
 /** Strip #name and @reference/@start/@end tokens from the text typed into Flow. */
 export function cleanPrompt(prompt: string): string {
-  return prompt
-    .replace(/#[A-Za-z0-9_-]+/g, '')
+  const cleaned = prompt
+    .replace(/#[A-Za-z0-9_.\-]+/g, '')
     .replace(/@(start|end|reference):[A-Za-z0-9_.-]+/g, '')
     .replace(/@[A-Za-z0-9_.-]+/g, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
+  return cleaned || prompt.trim();
 }
 
 export interface ParsedRefs {
@@ -112,12 +113,15 @@ export function outputFileName(
 ): string {
   const v = version > 1 ? `-v${version}` : '';
   const sub = subIndex !== undefined && subIndex > 0 ? `-${subIndex}` : '';
+  if (/^\d/.test(base)) {
+    return `${base}${sub}${v}${extFor(genType)}`;
+  }
   return `${pad3(index)}-${base}${sub}${v}${extFor(genType)}`;
 }
 
-/** Full relative path under the user's Downloads folder. */
-export function outputPath(dirName: string, fileName: string): string {
-  return `TryAIToday/${dirName}/${fileName}`;
+/** Full relative path under the user's Downloads folder (flat filename for Windows). */
+export function outputPath(_dirName: string, fileName: string): string {
+  return fileName;
 }
 
 /** Run-YYYY-MM-DD-NNN */

@@ -448,6 +448,7 @@ class FlowDriver {
   // avoids missing a fast result that appears while submitPrompt() is waiting
   // for Flow's progress indicator.
   private baselineResultCount = 0;
+  private baselineUrls: Set<string> = new Set();
   private resultCount = 0;
   private previewUrls: string[] = [];
   private downloadUrls: string[] = [];
@@ -483,6 +484,12 @@ class FlowDriver {
       await this.enterPrompt(input);
       this.progress('Waiting for Flow to enable Generate…');
       this.baselineResultCount = this.resultElements().length;
+      this.baselineUrls = new Set(
+        this.resultElements().map((el) => {
+          const img = el instanceof HTMLImageElement ? el : el.querySelector<HTMLImageElement>('img');
+          return img ? (img.currentSrc || img.src || '') : '';
+        }).filter(Boolean)
+      );
       await this.submitPrompt();
       this.progress('Generation submitted — waiting for the result…');
       await this.waitForResult();
@@ -691,21 +698,30 @@ class FlowDriver {
     return alerts.some((el) => ERROR_TEXT_RE.test((el.textContent ?? '').trim()));
   }
 
-  // FIX #3: Broadened result element collection.
-  // Filters out any <img> whose src is empty or a data: icon placeholder.
+  // Filters out Google avatars, nav icons, and tiny placeholder images.
+  // Only real AI-generated output images (>120px) pass through.
   private resultElements(): HTMLElement[] {
     const raw = selectors.result.map((s) => all(s)).flat().filter((e) => visible(e));
-    // Deduplicate by reference.
     const seen = new Set<HTMLElement>();
     const unique: HTMLElement[] = [];
     for (const el of raw) {
       if (seen.has(el)) continue;
       seen.add(el);
-      // Skip tiny placeholder icons (< 64 bytes data URIs).
+
       if (el instanceof HTMLImageElement) {
         const src = el.currentSrc || el.src || '';
-        if (!src || (src.startsWith('data:') && src.length < 100)) continue;
+        // Skip Google profile avatar
+        if (src.includes('googleusercontent.com/a/')) continue;
+        // Skip tiny placeholder data URIs
+        if (src.startsWith('data:') && src.length < 100) continue;
+        // Skip tiny icons (< 120px)
+        const w = el.naturalWidth || el.width || 0;
+        const h = el.naturalHeight || el.height || 0;
+        if (w > 0 && w < 120) continue;
+        if (h > 0 && h < 120) continue;
       }
+      if (el.closest('header, nav, [role="banner"], [aria-label*="Account" i], .gb_d')) continue;
+
       unique.push(el);
     }
     return unique;
@@ -715,8 +731,6 @@ class FlowDriver {
   private collectDownloadUrls(): string[] {
     const urls: string[] = [];
     const push = (u: string | null | undefined): void => {
-      // Only accept https:// URLs — blob: URLs are tab-scoped and cannot be
-      // downloaded from the background service worker context.
       if (u && u.startsWith('https://') && urls.indexOf(u) < 0) urls.push(u);
     };
     for (const sel of selectors.downloadButton) {
@@ -747,14 +761,9 @@ class FlowDriver {
 
   /**
    * Fetch each result image as a base64 data: URL.
-   *
-   * Content scripts run in the tab context and CAN access blob: URLs created
-   * by the page (they are tab-scoped). The background service worker CANNOT.
-   * So we resolve here and send data: URLs to the background for downloading.
    */
-  private async collectDataUrls(): Promise<string[]> {
-    const results = this.resultElements();
-    const newResults = results.slice(this.baselineResultCount);
+  private async collectDataUrls(elements?: HTMLElement[]): Promise<string[]> {
+    const targetElements = elements && elements.length > 0 ? elements : this.resultElements();
     const dataUrls: string[] = [];
 
     const blobToDataUrl = (blob: Blob): Promise<string> =>
@@ -765,7 +774,7 @@ class FlowDriver {
         reader.readAsDataURL(blob);
       });
 
-    for (const el of newResults) {
+    for (const el of targetElements) {
       const imgEl = el instanceof HTMLImageElement ? el : el.querySelector<HTMLImageElement>('img');
       const vidEl = el instanceof HTMLVideoElement ? el : el.querySelector<HTMLVideoElement>('video');
 
@@ -810,10 +819,7 @@ class FlowDriver {
     return dataUrls;
   }
 
-
-  // Wait for the result count to increase from the snapshot captured directly
-  // before Generate was clicked. This prevents both false positives from an
-  // earlier result and missed fast responses from Flow.
+  // Detects new result either via new image element OR image URL change / replace
   private async waitForResult(): Promise<void> {
     const start = Date.now();
     const timeoutMs = 5 * 60 * 1000;
@@ -822,33 +828,46 @@ class FlowDriver {
     const requiredFailureTicks = 3;    // Require 3 consecutive failure ticks before throwing
 
     while (Date.now() - start < timeoutMs) {
-      const results = this.resultElements();
-      const newResults = results.length - this.baselineResultCount;
+      const currentResults = this.resultElements();
+      
+      // Strategy A: Count increase
+      const newByCount = currentResults.length - this.baselineResultCount;
+      
+      // Strategy B: Image URL changed from baseline snapshot
+      const newByUrl = currentResults.filter((el) => {
+        const img = el instanceof HTMLImageElement ? el : el.querySelector<HTMLImageElement>('img');
+        const src = img ? (img.currentSrc || img.src || '') : '';
+        return src && !this.baselineUrls.has(src);
+      });
+
+      const newResults = Math.max(newByCount, newByUrl.length);
 
       if (newResults > 0) {
-        consecutiveFailureTicks = 0;   // Reset counter on any new result
-        this.resultCount = Math.max(this.resultCount, newResults);
-        this.previewUrls = results.slice(this.baselineResultCount).slice(0, 4).map((e) => {
-          const url = (e as HTMLImageElement | HTMLVideoElement).src ?? '';
+        consecutiveFailureTicks = 0;
+        this.resultCount = newResults;
+        
+        const candidateElements = newByUrl.length > 0 ? newByUrl : currentResults.slice(this.baselineResultCount);
+
+        this.previewUrls = candidateElements.slice(0, 4).map((e) => {
+          const img = e instanceof HTMLImageElement ? e : e.querySelector<HTMLImageElement>('img');
+          const url = img ? (img.currentSrc || img.src || '') : (e as HTMLImageElement).src ?? '';
           return url || (e.getAttribute('src') ?? '');
         }).filter(Boolean);
-        this.downloadUrls = this.collectDownloadUrls();
 
-        // Wait until the expected count of new results arrives.
-        if (newResults >= Math.max(1, this.job.settings.count)) {
-          this.resultCount = newResults;
-
-          // If no https:// download URLs found, fall back to canvas data: URLs.
-          // This handles blob: URL images which expire and can't be accessed
-          // from the background service worker context.
-          if (this.downloadUrls.length === 0) {
-            try {
-              this.downloadUrls = await this.collectDataUrls();
-            } catch { /* keep empty — background will use previewUrls */ }
+        // Always extract real canvas data: URLs from the generated images
+        try {
+          const dataUrls = await this.collectDataUrls(candidateElements);
+          if (dataUrls.length > 0) {
+            this.downloadUrls = dataUrls;
+          } else {
+            this.downloadUrls = this.collectDownloadUrls();
           }
-
-          return;
+        } catch {
+          this.downloadUrls = this.collectDownloadUrls();
         }
+
+        console.log(`[flow] Found ${this.downloadUrls.length} image result(s)`);
+        return;
       }
 
       // Check for failure surface only after grace period, with 3-tick debounce
@@ -863,7 +882,7 @@ class FlowDriver {
         consecutiveFailureTicks = 0;
       }
 
-      await new Promise((r) => setTimeout(r, 1000));
+      await new Promise((r) => setTimeout(r, 800));
     }
     throw new Error('Timed out waiting for a generated result');
   }
@@ -1037,13 +1056,19 @@ const videoModeLabels: Record<GenSettings['videoMode'], string> = {
  *  5. Last resort: set textContent + fire an input event.
  */
 function setValue(input: HTMLElement, value: string): void {
-  if (input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) {
-    // Use the native property setter to bypass React/Angular value tracking.
-    const nativeSetter =
-      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set ??
-      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+  if (input instanceof HTMLTextAreaElement) {
+    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
     if (nativeSetter) nativeSetter.call(input, value);
-    else (input as HTMLInputElement).value = value;
+    else input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return;
+  }
+
+  if (input instanceof HTMLInputElement) {
+    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    if (nativeSetter) nativeSetter.call(input, value);
+    else input.value = value;
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
     return;
