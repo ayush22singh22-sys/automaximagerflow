@@ -426,6 +426,45 @@ async function startGeneration(app: AppState, job: Job): Promise<void> {
   }
 }
 
+/**
+ * Fetch a CDN image URL and convert it to a PNG data: URL using OffscreenCanvas.
+ * Background service workers have no CORS restriction on fetch(), and OffscreenCanvas
+ * is available in Chrome MV3 service workers (Chrome 69+).
+ * Falls back to the original URL if conversion fails.
+ */
+async function fetchAsPngDataUrl(url: string): Promise<string> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return url;
+    const blob = await res.blob();
+    const bitmap = await createImageBitmap(blob);
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return url;
+    ctx.drawImage(bitmap, 0, 0);
+    const pngBlob = await canvas.convertToBlob({ type: 'image/png' });
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(pngBlob);
+    });
+  } catch (err) {
+    console.warn('[background] fetchAsPngDataUrl failed, using original URL:', err);
+    return url;
+  }
+}
+
+/** Resolve the download URL — converting CDN images to PNG when needed. */
+async function resolveDownloadUrl(url: string, fileName: string): Promise<string> {
+  // Only convert https:// image URLs that are meant to be saved as .png
+  if (url.startsWith('https://') && fileName.endsWith('.png')) {
+    console.log(`[background] Converting CDN image to PNG: ${url.slice(0, 80)}…`);
+    return fetchAsPngDataUrl(url);
+  }
+  return url;
+}
+
 async function downloadUrlWithRetry(run: Run, job: Job, record: DownloadRecord): Promise<void> {
   for (let attempt = 1; attempt <= MAX_DOWNLOAD_ATTEMPTS; attempt += 1) {
     record.state = 'running';
@@ -433,7 +472,8 @@ async function downloadUrlWithRetry(run: Run, job: Job, record: DownloadRecord):
     record.error = undefined;
     await saveJob(run, job).catch(noop);
     const path = outputPath(run.dirName, record.fileName);
-    const outcome = await downloadTo(path, record.url);
+    const downloadUrl = await resolveDownloadUrl(record.url, record.fileName);
+    const outcome = await downloadTo(path, downloadUrl);
     if (outcome.ok) {
       record.state = 'completed';
       record.localPath = outcome.localPath;
@@ -619,7 +659,8 @@ async function handleInbound(msg: InboundMessage): Promise<void> {
         rec.state = 'running';
         await saveJob(run, job).catch(noop);
         const path = outputPath(run.dirName, rec.fileName);
-        const outcome = await downloadTo(path, rec.url);
+        const downloadUrl = await resolveDownloadUrl(rec.url, rec.fileName);
+        const outcome = await downloadTo(path, downloadUrl);
         if (outcome.ok) {
           rec.state = 'completed';
           rec.localPath = outcome.localPath;

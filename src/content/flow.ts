@@ -131,6 +131,13 @@ const selectors: SelectorConfig = {
     'circle[stroke-dasharray]',        // SVG spinner rings
     '[class*="Generating" i]',
     '[class*="Processing" i]',
+    // Extended: cover Flow/ImageFX-specific signals
+    '[aria-label*="generating" i]',
+    '[aria-label*="loading" i]',
+    '[class*="skeleton" i]',
+    '[class*="shimmer" i]',
+    'button[disabled][aria-label*="generate" i]',
+    '[data-testid*="skeleton" i]',
   ],
 
   completed: [
@@ -724,6 +731,44 @@ class FlowDriver {
 
       unique.push(el);
     }
+
+    // FALLBACK: if CSS selectors found nothing, scan ALL visible images on the page.
+    // This handles cases where Flow/ImageFX updates its DOM and our selectors break.
+    if (unique.length === 0) {
+      const allImgs = Array.from(document.querySelectorAll<HTMLImageElement>('img'));
+      const fallback: HTMLElement[] = [];
+      for (const img of allImgs) {
+        if (!visible(img)) continue;
+        const src = img.currentSrc || img.src || '';
+        if (!src) continue;
+        // Skip avatars, icons, logos, tiny images
+        if (src.includes('googleusercontent.com/a/')) continue;
+        if (src.startsWith('data:') && src.length < 100) continue;
+        const w = img.naturalWidth || img.width || 0;
+        const h = img.naturalHeight || img.height || 0;
+        if (w > 0 && w < 150) continue;
+        if (h > 0 && h < 150) continue;
+        if (img.closest('header, nav, footer, [role="banner"], [role="navigation"], [aria-label*="Account" i], .gb_d')) continue;
+        fallback.push(img);
+      }
+      if (fallback.length > 0) {
+        console.log('[flow:resultElements] CSS selectors matched 0 — fallback found', fallback.length, 'image(s):',
+          fallback.map((el) => {
+            const img = el as HTMLImageElement;
+            return `${img.currentSrc || img.src} (${img.naturalWidth}x${img.naturalHeight})`;
+          })
+        );
+      } else {
+        // Log ALL images so we can diagnose selector issues
+        console.log('[flow:resultElements] ALL imgs on page:',
+          allImgs.filter((img) => visible(img)).map((img) =>
+            `${img.currentSrc || img.src || '(no src)'} vis=${visible(img)} ${img.naturalWidth}x${img.naturalHeight}`
+          )
+        );
+      }
+      return fallback;
+    }
+
     return unique;
   }
 
@@ -760,7 +805,16 @@ class FlowDriver {
   }
 
   /**
-   * Fetch each result image as a base64 data: URL.
+   * Collect result URLs to hand off to the background downloader.
+   *
+   * Strategy priority:
+   *   1. https:// CDN URLs — pushed directly. chrome.downloads.download() in the
+   *      background service worker has no CORS restriction, so this is the
+   *      most reliable path for Google Flow CDN images (lh3.googleusercontent.com, etc.).
+   *      Attempting canvas.drawImage() on these images throws SecurityError (tainted
+   *      canvas) and fetch() from a content script is CORS-blocked, so we skip both.
+   *   2. blob: URLs — same-origin, safe to draw onto canvas and export as data:.
+   *   3. data: URLs — already in data: form, push directly.
    */
   private async collectDataUrls(elements?: HTMLElement[]): Promise<string[]> {
     const targetElements = elements && elements.length > 0 ? elements : this.resultElements();
@@ -779,25 +833,40 @@ class FlowDriver {
       const vidEl = el instanceof HTMLVideoElement ? el : el.querySelector<HTMLVideoElement>('video');
 
       if (imgEl) {
-        // Strategy 1: Direct Canvas Draw (fastest & handles blob: without CORS issues)
-        try {
-          const canvas = document.createElement('canvas');
-          canvas.width = imgEl.naturalWidth || imgEl.width || 512;
-          canvas.height = imgEl.naturalHeight || imgEl.height || 512;
-          const ctx = canvas.getContext('2d');
-          if (ctx && canvas.width > 0 && canvas.height > 0) {
-            ctx.drawImage(imgEl, 0, 0);
-            const dataUrl = canvas.toDataURL('image/png', 1.0);
-            if (dataUrl && dataUrl.length > 100 && !dataUrl.startsWith('data:,')) {
-              dataUrls.push(dataUrl);
-              continue;
-            }
-          }
-        } catch { /* Canvas tainted — try fetch fallback */ }
-
-        // Strategy 2: Fetch & FileReader
         const src = imgEl.currentSrc || imgEl.src || '';
-        if (src) {
+        if (!src) continue;
+
+        // Strategy 1: https:// CDN URLs — push directly, let chrome.downloads handle them.
+        // canvas.toDataURL() throws SecurityError for cross-origin images, and
+        // content-script fetch() is blocked by CORS on Google's CDN.
+        if (src.startsWith('https://')) {
+          dataUrls.push(src);
+          continue;
+        }
+
+        // Strategy 2: data: URLs — already usable, push directly.
+        if (src.startsWith('data:')) {
+          dataUrls.push(src);
+          continue;
+        }
+
+        // Strategy 3: blob: URLs — same-origin, safe to canvas-draw or fetch.
+        if (src.startsWith('blob:')) {
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = imgEl.naturalWidth || imgEl.width || 512;
+            canvas.height = imgEl.naturalHeight || imgEl.height || 512;
+            const ctx = canvas.getContext('2d');
+            if (ctx && canvas.width > 0 && canvas.height > 0) {
+              ctx.drawImage(imgEl, 0, 0);
+              const dataUrl = canvas.toDataURL('image/png', 1.0);
+              if (dataUrl && dataUrl.length > 100 && !dataUrl.startsWith('data:,')) {
+                dataUrls.push(dataUrl);
+                continue;
+              }
+            }
+          } catch { /* canvas failed — try fetch */ }
+
           try {
             const res = await fetch(src);
             if (res.ok) {
@@ -808,9 +877,16 @@ class FlowDriver {
                 continue;
               }
             }
-          } catch { /* Fetch failed */ }
+          } catch { /* fetch also failed */ }
+
+          // Last resort: push the blob URL itself.
           dataUrls.push(src);
+          continue;
         }
+
+        // Unknown scheme — push as-is and let the downloader try.
+        dataUrls.push(src);
+
       } else if (vidEl) {
         const src = vidEl.currentSrc || vidEl.src;
         if (src) dataUrls.push(src);
@@ -828,16 +904,19 @@ class FlowDriver {
     const requiredFailureTicks = 3;    // Require 3 consecutive failure ticks before throwing
     let hasStartedGenerating = false;
 
+    let debugTick = 0;
     while (Date.now() - start < timeoutMs) {
-      if (this.generatingActive()) {
+      debugTick++;
+      const wasGenerating = this.generatingActive();
+      if (wasGenerating) {
         hasStartedGenerating = true;
       }
 
       const currentResults = this.resultElements();
-      
+
       // Strategy A: Count increase
       const newByCount = currentResults.length - this.baselineResultCount;
-      
+
       // Strategy B: Image URL changed from baseline snapshot
       const newByUrl = currentResults.filter((el) => {
         const img = el instanceof HTMLImageElement ? el : el.querySelector<HTMLImageElement>('img');
@@ -850,12 +929,29 @@ class FlowDriver {
 
       const newResults = Math.max(newByCount, newByUrl.length, spinnerFinished ? currentResults.length : 0);
 
+      // Debug log every 5 ticks (~4s) so we can trace what's happening
+      if (debugTick % 5 === 1) {
+        const urls = currentResults.map((el) => {
+          const img = el instanceof HTMLImageElement ? el : el.querySelector<HTMLImageElement>('img');
+          return img ? (img.currentSrc || img.src || '(no src)').slice(0, 80) : '(no img)';
+        });
+        console.log(
+          `[flow:waitForResult] tick=${debugTick} baseline=${this.baselineResultCount}` +
+          ` current=${currentResults.length} newByCount=${newByCount}` +
+          ` newByUrl=${newByUrl.length} spinner=${wasGenerating}` +
+          ` hasStarted=${hasStartedGenerating} spinnerDone=${spinnerFinished}`,
+          urls,
+        );
+      }
+
       if (newResults > 0) {
         consecutiveFailureTicks = 0;
         this.resultCount = newResults;
-        
-        // Give image 500ms to paint fully onto canvas/DOM
-        await new Promise((r) => setTimeout(r, 500));
+
+        // Give Flow 1500ms to lazy-load src attributes and fully paint the image.
+        // CDN images (https://) often have their src set asynchronously after the
+        // <img> element appears in the DOM, so we need to wait before reading src.
+        await new Promise((r) => setTimeout(r, 1500));
 
         const candidateElements = newByUrl.length > 0 ? newByUrl : (currentResults.slice(this.baselineResultCount).length > 0 ? currentResults.slice(this.baselineResultCount) : currentResults);
 
