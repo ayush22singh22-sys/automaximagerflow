@@ -358,3 +358,12 @@ test('setRefresh stores refresh settings and refresh normalization adds defaults
   assert.equal(app.refresh.intervalMin, 0);
   assert.equal(app.refresh.afterJobs, 0);
 });
+
+test('setRunDirName updates project folder name with sanitization', () => {
+  const app = freshApp();
+  assert.match(app.currentRun.dirName, /^Run-\d{4}-\d{2}-\d{2}-001$/);
+  reduceApp(app, { type: 'setRunDirName', dirName: 'My Awesome Project: 2026' });
+  assert.equal(app.currentRun.dirName, 'My Awesome Project_ 2026');
+  assert.equal(outputPath(app.currentRun.dirName, '001-result.png'), 'TryAIToday/My Awesome Project_ 2026/001-result.png');
+});
+

@@ -20,6 +20,7 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string): T =>
 
 const els = {
   status: $('status'),
+  runFolderInput: $<HTMLInputElement>('run-folder-input'),
   runLabel: $('run-label'),
   promptInput: $<HTMLTextAreaElement>('prompt-input'),
   addBtn: $<HTMLButtonElement>('add-btn'),
@@ -166,7 +167,7 @@ function progressBar(pct: number): HTMLElement {
 function dirtyKey(app: AppState): string {
   const run = app.currentRun;
   const jk = run.jobs.map((j) => `${j.state}:${j.version}`).join(',');
-  return `${run.jobs.length}|${jk}|${app.activeJobId}|${app.running}|${app.paused}|${search}|${filterStatus}|${Array.from(expanded).sort().join(',')}|${editingId}`;
+  return `${run.dirName}|${run.jobs.length}|${jk}|${app.activeJobId}|${app.running}|${app.paused}|${search}|${filterStatus}|${Array.from(expanded).sort().join(',')}|${editingId}`;
 }
 
 function render(): void {
@@ -177,7 +178,10 @@ function render(): void {
     els.status.textContent = status || 'Idle';
     els.status.className = 'status' + (app?.paused ? ' paused' : app?.running ? ' running' : '');
 
-    els.runLabel.textContent = (run.jobs?.length ?? 0) ? `Run ${run.dirName} · #${run.runNumber}` : `Run ${run.dirName || 'Run-…'}`;
+    if (els.runFolderInput && document.activeElement !== els.runFolderInput) {
+      els.runFolderInput.value = run.dirName || '';
+    }
+    els.runLabel.textContent = (run.jobs?.length ?? 0) ? `#${run.runNumber} (${run.jobs.length})` : `#${run.runNumber || 1}`;
 
     const completed = (run.jobs ?? []).filter((j) => j.state === 'completed').length;
     els.queueCount.textContent = `${run.jobs?.length ?? 0} jobs · ${completed} done`;
@@ -747,6 +751,23 @@ function wireControls(): void {
 
   els.search.oninput = () => { search = els.search.value; render(); };
   els.filterStatus.onchange = () => { filterStatus = els.filterStatus.value; render(); };
+
+  if (els.runFolderInput) {
+    const saveFolder = (): void => {
+      const val = els.runFolderInput.value.trim();
+      if (val && val !== (ui.app?.currentRun?.dirName ?? '')) {
+        void runAction({ type: 'setRunDirName', dirName: val });
+      }
+    };
+    els.runFolderInput.onchange = saveFolder;
+    els.runFolderInput.onblur = saveFolder;
+    els.runFolderInput.onkeydown = (e: KeyboardEvent) => {
+      if (e.key === 'Enter') {
+        saveFolder();
+        els.runFolderInput.blur();
+      }
+    };
+  }
 
   els.importFile.onchange = () => void onImport();
   els.refFile.onchange = () => void onRefUpload();

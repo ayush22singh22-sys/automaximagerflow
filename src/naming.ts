@@ -128,9 +128,23 @@ export function outputFileName(
   return `${pad3(index)}-${base}${sub}${v}${extFor(genType)}`;
 }
 
-/** Full relative path under the user's Downloads folder (flat filename for Windows). */
-export function outputPath(_dirName: string, fileName: string): string {
-  return fileName;
+/** Clean folder name so it's safe for Windows/macOS/Linux filesystems. */
+export function sanitizeFolderName(value: string): string {
+  let s = Array.from(value)
+    .filter((ch) => ch.charCodeAt(0) >= 0x20 && ch.charCodeAt(0) !== 0x7f)
+    .join('');
+  s = s
+    .replace(/[<>:"/\\|?*]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim();
+  s = s.replace(/[. ]+$/g, '');
+  return s || 'Run';
+}
+
+/** Full relative path under the user's Downloads folder. */
+export function outputPath(dirName: string, fileName: string): string {
+  const folder = sanitizeFolderName(dirName);
+  return `TryAIToday/${folder}/${fileName}`;
 }
 
 /** Run-YYYY-MM-DD-NNN */
@@ -140,3 +154,4 @@ export function runDirName(runNumber: number, date = new Date(), pad = 3): strin
   const d = String(date.getDate()).padStart(2, '0');
   return `Run-${y}-${mo}-${d}-${String(runNumber).padStart(pad, '0')}`;
 }
+

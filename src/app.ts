@@ -1,6 +1,6 @@
 import type { Action, AppState, DownloadRecord, GenSettings, Job, Run } from './types.js';
 import { defaultSettings, jobId, runId } from './types.js';
-import { jobBaseName, outputFileName, parseNameToken, resolvePromptRefs, runDirName } from './naming.js';
+import { jobBaseName, outputFileName, parseNameToken, resolvePromptRefs, runDirName, sanitizeFolderName } from './naming.js';
 
 const HISTORY_PER_MODE = 10;
 
@@ -55,6 +55,13 @@ export function reduceApp(state: AppState, action: Action): AppState {
         if (action.settings !== undefined) job.settings = action.settings;
         if (action.refs !== undefined) job.refs = action.refs;
         if (action.name !== undefined) job.name = action.name;
+      }
+      break;
+    }
+    case 'setRunDirName': {
+      const sanitized = sanitizeFolderName(action.dirName);
+      if (sanitized) {
+        state.currentRun.dirName = sanitized;
       }
       break;
     }

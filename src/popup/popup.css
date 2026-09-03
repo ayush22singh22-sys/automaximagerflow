@@ -423,10 +423,50 @@ textarea {
 }
 
 /* Run header + downloads + history */
+.run-folder-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.run-folder-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 6px;
+  transition: border-color 0.15s ease;
+}
+.run-folder-box:focus-within {
+  border-color: var(--primary);
+  background: rgba(255, 255, 255, 0.07);
+}
+.run-folder-box .folder-icon {
+  font-size: 13px;
+  opacity: 0.8;
+  cursor: default;
+}
+.run-folder-input {
+  flex: 1;
+  border: none !important;
+  background: transparent !important;
+  padding: 4px 2px !important;
+  font-size: 12px !important;
+  font-weight: 500;
+  color: var(--text) !important;
+  outline: none !important;
+  box-shadow: none !important;
+  min-width: 0;
+}
 .run-label {
   font-size: 12px;
   font-weight: 600;
   color: var(--primary);
+  white-space: nowrap;
 }
 .dl-list {
   margin-top: 6px;

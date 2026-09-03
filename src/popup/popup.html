@@ -22,7 +22,11 @@
     <!-- QUEUE -->
     <section id="tab-queue" class="tab-panel active">
       <div class="card">
-        <div class="row">
+        <div class="row run-folder-row">
+          <div class="run-folder-box" title="Project folder in Downloads/TryAIToday/">
+            <span class="folder-icon">📁</span>
+            <input id="run-folder-input" class="run-folder-input" type="text" placeholder="Project folder name…" />
+          </div>
           <span id="run-label" class="run-label"></span>
         </div>
         <textarea id="prompt-input" rows="3" placeholder="Paste one or more prompts (one per line). Use #name for filenames, @name to attach a reference, @start:x / @end:x / @reference:x for roles…"></textarea>

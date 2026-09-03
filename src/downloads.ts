@@ -71,11 +71,13 @@ function downloadAttempt(filename: string, url: string, timeoutMs: number): Prom
     chrome.downloads.onChanged.addListener(onChanged);
 
     // Set pendingFilename BEFORE calling chrome.downloads.download()
-    pendingFilename = filename;
-    console.log(`[downloads] Starting download → filename: "${filename}"`);
+    // Chrome requires forward slashes for relative subdirectory paths.
+    const normalized = filename.replace(/\\/g, '/');
+    pendingFilename = normalized;
+    console.log(`[downloads] Starting download → filename: "${normalized}"`);
 
     chrome.downloads.download(
-      { url, filename, conflictAction: 'uniquify', saveAs: false },
+      { url, filename: normalized, conflictAction: 'uniquify', saveAs: false },
       (id?: number) => {
         if (chrome.runtime.lastError || id === undefined) {
           pendingFilename = null;

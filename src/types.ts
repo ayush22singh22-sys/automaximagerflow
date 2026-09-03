@@ -134,6 +134,7 @@ export type Action =
   | { type: 'duplicateJob'; id: string }
   | { type: 'moveJob'; id: string; toIndex: number }
   | { type: 'updateJob'; id: string; prompt?: string; settings?: Partial<GenSettings>; refs?: TaggedRef[]; name?: string }
+  | { type: 'setRunDirName'; dirName: string }
   | { type: 'retryFailed' }
   | { type: 'retryDownloads' }
   | { type: 'retryJob'; id: string }
