@@ -152,8 +152,14 @@ const selectors: SelectorConfig = {
     '[aria-label*="Error" i][role="alert"]',
     '[class*="error-message" i]',
     '[class*="errorMessage" i]',
+    '[role="dialog"]',
+    'mat-snack-bar-container',
+    '[class*="snack" i]',
+    '[class*="toast" i]',
+    '[class*="alert" i]',
+    '[class*="banner" i]',
     // Only match role=alert if it has visible non-empty text (not ambient).
-    // Checked separately in failureSurface() below.
+    // Checked separately in detectFailure() below.
   ],
 
   // FIX #3: Broaden result selectors — Flow serves images from CDN (https://),
@@ -639,7 +645,8 @@ class FlowDriver {
       error?: string;
     } | undefined;
     if (!response?.ok) {
-      throw new Error(`Flow did not accept native input: ${response?.error ?? 'no response from extension'}`);
+      // Fall back directly to DOM setValue if native debugger input was unavailable in background
+      setValue(input, this.job.prompt);
     }
 
     // Wait longer — Angular needs time to re-evaluate the model and enable the button.
@@ -658,14 +665,18 @@ class FlowDriver {
     const gen = findGenerateButton();
     if (!gen) throw new Error('No generate button found on the Flow page.');
 
-    // Phase 3 — click it.
+    // Phase 3 — click it via native input and DOM click
     const rect = gen.getBoundingClientRect();
     const response = (await safeSendMessage({
       kind: 'native-click',
       x: rect.left + rect.width / 2,
       y: rect.top + rect.height / 2,
     })) as { ok?: boolean; error?: string } | undefined;
-    if (!response?.ok) {
+
+    // Also trigger DOM click to ensure background / occluded tabs process the click
+    click(gen);
+
+    if (!response?.ok && !this.generatingActive()) {
       throw new Error(`Flow did not accept the Generate click: ${response?.error ?? 'no response from extension'}`);
     }
 
@@ -699,16 +710,58 @@ class FlowDriver {
     return selectors.generating.some((s) => visible($(s)));
   }
 
-  private failureSurface(): boolean {
-    const ERROR_TEXT_RE = /(error|failed|unable|violation|policy|something went wrong|try again)/i;
-    // Check specific error selectors with error text.
-    for (const sel of selectors.failed) {
-      const el = $(sel);
-      if (el && visible(el) && ERROR_TEXT_RE.test(el.textContent ?? '')) return true;
+  private detectFailure(): { hasError: boolean; message: string; isUnusual: boolean } {
+    const UNUSUAL_TEXT_RE = /(unusual activity|unusual traffic|suspicious activity|rate limit|too many requests|slow down|quota exceeded|we noticed some unusual)/i;
+    const GENERAL_ERROR_RE = /(unusual activity|unusual traffic|suspicious activity|rate limit|too many requests|slow down|quota exceeded|we noticed some unusual|error|failed|unable|violation|policy|something went wrong|try again)/i;
+
+    const candidateSelectors = [
+      ...selectors.failed,
+      '[role="alert"]',
+      '[role="dialog"]',
+      'mat-snack-bar-container',
+      '[class*="snack" i]',
+      '[class*="toast" i]',
+      '[class*="alert" i]',
+      '[class*="banner" i]',
+    ];
+
+    for (const sel of candidateSelectors) {
+      const elements = all(sel).filter((el) => visible(el));
+      for (const el of elements) {
+        const text = (el.textContent ?? '').trim().replace(/\s+/g, ' ');
+        if (!text) continue;
+        if (GENERAL_ERROR_RE.test(text)) {
+          const isUnusual = UNUSUAL_TEXT_RE.test(text);
+          this.dismissErrorModal(el);
+          return {
+            hasError: true,
+            message: text.slice(0, 300),
+            isUnusual,
+          };
+        }
+      }
     }
-    // Check role=alert ONLY if it contains explicit error keywords (prevents ambient alert false positives).
-    const alerts = all('[role="alert"]').filter((el) => visible(el));
-    return alerts.some((el) => ERROR_TEXT_RE.test((el.textContent ?? '').trim()));
+
+    return { hasError: false, message: '', isUnusual: false };
+  }
+
+  private dismissErrorModal(container: HTMLElement): void {
+    try {
+      const buttons = Array.from(container.querySelectorAll<HTMLElement>('button, [role="button"], a'));
+      for (const btn of buttons) {
+        const txt = (btn.textContent ?? '').trim();
+        if (/(dismiss|ok|close|got it|understand|cancel)/i.test(txt)) {
+          click(btn);
+          break;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private failureSurface(): boolean {
+    return this.detectFailure().hasError;
   }
 
   // Filters out Google avatars, nav icons, and tiny placeholder images.
@@ -935,7 +988,6 @@ class FlowDriver {
       }
 
       if (newResults > 0) {
-        consecutiveFailureTicks = 0;
         this.resultCount = newResults;
 
         // Give Flow 1500ms to lazy-load src attributes and fully paint the image.
@@ -999,13 +1051,19 @@ class FlowDriver {
         return;
       }
 
-      // Check for failure surface only after grace period, with 3-tick debounce
+      // Check for failure surface only after grace period, with debounce
+      const failure = this.detectFailure();
       const pastGracePeriod = Date.now() - start > graceMs;
-      if (pastGracePeriod && this.failureSurface() && !this.generatingActive()) {
+      if ((pastGracePeriod || failure.isUnusual) && failure.hasError && !this.generatingActive()) {
         consecutiveFailureTicks++;
-        console.log(`[flow] failure signal tick ${consecutiveFailureTicks}/${requiredFailureTicks}`);
-        if (consecutiveFailureTicks >= requiredFailureTicks) {
-          throw new Error('Flow reported a generation failure');
+        console.log(`[flow] failure signal tick ${consecutiveFailureTicks}/${requiredFailureTicks}: ${failure.message}`);
+        // For unusual activity or explicit modal error, fail immediately (2 ticks) so background can handle retry/cooldown
+        const ticksNeeded = failure.isUnusual ? 2 : requiredFailureTicks;
+        if (consecutiveFailureTicks >= ticksNeeded) {
+          if (failure.isUnusual) {
+            throw new Error(`Flow reported unusual activity: "${failure.message}"`);
+          }
+          throw new Error(`Flow reported a generation failure: "${failure.message || 'Unknown error'}"`);
         }
       } else {
         consecutiveFailureTicks = 0;
@@ -1278,6 +1336,81 @@ function safeSendMessage<T = unknown>(message: unknown): Promise<T | undefined> 
 }
 
 function noop(): void { /* ignore */ }
+
+/**
+ * Ensures Google Flow and this automation continue running smoothly when
+ * the browser is minimized, occluded, or moved to another virtual desktop.
+ */
+let audioCtx: AudioContext | null = null;
+function startSilentAudioKeepAlive(): void {
+  try {
+    if (!audioCtx) {
+      const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextClass) return;
+      audioCtx = new AudioContextClass();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      gain.gain.value = 0.00001; // inaudible
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+    }
+    if (audioCtx.state === 'suspended') {
+      void audioCtx.resume();
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function enableBackgroundExecution(): void {
+  try {
+    // 1. Spoof visibility properties so Flow's Angular engine does not pause or throttle
+    Object.defineProperty(document, 'visibilityState', {
+      get: () => 'visible',
+      configurable: true,
+    });
+    Object.defineProperty(document, 'hidden', {
+      get: () => false,
+      configurable: true,
+    });
+    document.hasFocus = () => true;
+
+    // 2. Stop visibilitychange events from signaling tab hidden to page listeners
+    window.addEventListener(
+      'visibilitychange',
+      (e) => {
+        e.stopImmediatePropagation();
+      },
+      true,
+    );
+
+    // 3. Start silent audio keepalive so Chromium treats this as a media tab
+    // (disables timer throttling, occlusion freezing, and memory discard)
+    startSilentAudioKeepAlive();
+  } catch {
+    /* ignore */
+  }
+}
+
+let keepAlivePort: chrome.runtime.Port | null = null;
+function sendKeepAlivePing(): void {
+  try {
+    if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.id) return;
+    if (!keepAlivePort) {
+      keepAlivePort = chrome.runtime.connect({ name: 'flow-keepalive' });
+      keepAlivePort.onDisconnect.addListener(() => {
+        keepAlivePort = null;
+      });
+    }
+    keepAlivePort.postMessage({ type: 'ping' });
+  } catch {
+    keepAlivePort = null;
+  }
+}
+
+enableBackgroundExecution();
+setInterval(sendKeepAlivePing, 15000);
 
 // Announce availability so the background can reconnect cheaply after reload.
 const ready: InboundMessage = { kind: 'flow-ready' };

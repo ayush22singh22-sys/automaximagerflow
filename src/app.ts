@@ -154,6 +154,17 @@ export function reduceApp(state: AppState, action: Action): AppState {
         afterJobs: Math.max(0, action.refresh.afterJobs || 0),
       };
       break;
+    case 'setAutoRetry':
+      state.autoRetry = {
+        enabled: !!action.autoRetry.enabled,
+        maxRetries: Math.max(1, action.autoRetry.maxRetries || 1),
+        cooldownSec: Math.max(5, action.autoRetry.cooldownSec || 5),
+        reloadOnUnusualActivity: action.autoRetry.reloadOnUnusualActivity !== undefined ? !!action.autoRetry.reloadOnUnusualActivity : true,
+      };
+      break;
+    case 'setJobDelay':
+      state.jobDelaySec = Math.max(0, action.delaySec || 0);
+      break;
     case 'addReference':
       if (action.reference?.id && action.reference?.dataUrl) {
         state.references = state.references.filter((r) => r.id !== action.reference.id);
@@ -222,6 +233,7 @@ function requeue(job: Job): void {
   job.error = undefined;
   job.startedAt = undefined;
   job.finishedAt = undefined;
+  job.retryCount = 0;
 }
 
 /** Clone a job as a fresh queued job (for "run again") with version reset. */
@@ -239,6 +251,7 @@ function cloneJobFresh(job: Job): Job {
     regenArchive: undefined,
     genSummary: undefined,
     refs: job.refs.map((t) => ({ ...t })),
+    retryCount: 0,
   };
 }
 
@@ -292,6 +305,7 @@ function addPrompts(state: AppState, promptChunks: string[]): void {
       name: parseNameToken(prompt) ?? undefined,
       version: 1,
       downloads: [],
+      retryCount: 0,
     });
   }
 }

@@ -367,3 +367,38 @@ test('setRunDirName updates project folder name with sanitization', () => {
   assert.equal(outputPath(app.currentRun.dirName, '001-result.png'), 'TryAIToday/My Awesome Project_ 2026/001-result.png');
 });
 
+test('setAutoRetry and setJobDelay store anti-detection and retry settings', () => {
+  const app = freshApp();
+  assert.equal(app.autoRetry.enabled, true);
+  assert.equal(app.autoRetry.maxRetries, 3);
+  assert.equal(app.autoRetry.cooldownSec, 20);
+  assert.equal(app.jobDelaySec, 5);
+
+  reduceApp(app, {
+    type: 'setAutoRetry',
+    autoRetry: { enabled: false, maxRetries: 5, cooldownSec: 45, reloadOnUnusualActivity: false },
+  });
+  assert.equal(app.autoRetry.enabled, false);
+  assert.equal(app.autoRetry.maxRetries, 5);
+  assert.equal(app.autoRetry.cooldownSec, 45);
+  assert.equal(app.autoRetry.reloadOnUnusualActivity, false);
+
+  reduceApp(app, { type: 'setJobDelay', delaySec: 10 });
+  assert.equal(app.jobDelaySec, 10);
+});
+
+test('retryCount is initialized on new jobs and reset on requeue/retryFailed', () => {
+  const app = freshApp();
+  reduceApp(app, { type: 'add', prompts: ['test prompt'] });
+  assert.equal(app.currentRun.jobs[0].retryCount, 0);
+
+  // Simulate retry count incremented during auto-retry
+  app.currentRun.jobs[0].retryCount = 2;
+  app.currentRun.jobs[0].state = 'failed';
+
+  reduceApp(app, { type: 'retryFailed' });
+  assert.equal(app.currentRun.jobs[0].state, 'queued');
+  assert.equal(app.currentRun.jobs[0].retryCount, 0);
+});
+
+

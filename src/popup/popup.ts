@@ -53,6 +53,12 @@ const els = {
   refreshInterval: $<HTMLInputElement>('refresh-interval'),
   refreshJobs: $<HTMLInputElement>('refresh-jobs'),
   saveRefresh: $<HTMLButtonElement>('save-refresh'),
+  setDelay: $<HTMLInputElement>('set-delay'),
+  autoretryEnabled: $<HTMLInputElement>('autoretry-enabled'),
+  autoretryMax: $<HTMLInputElement>('autoretry-max'),
+  autoretryCooldown: $<HTMLInputElement>('autoretry-cooldown'),
+  autoretryReload: $<HTMLInputElement>('autoretry-reload'),
+  saveAutoretry: $<HTMLButtonElement>('save-autoretry'),
   refFile: $<HTMLInputElement>('ref-file'),
   refName: $<HTMLInputElement>('ref-name'),
   refCategory: $<HTMLSelectElement>('ref-category'),
@@ -93,6 +99,8 @@ function emptyUiApp(): AppState {
     references: [],
     refresh: { enabled: false, intervalMin: 15, afterJobs: 0 },
     jobsSinceRefresh: 0,
+    autoRetry: { enabled: true, maxRetries: 3, cooldownSec: 20, reloadOnUnusualActivity: true },
+    jobDelaySec: 5,
   };
 }
 
@@ -201,6 +209,7 @@ function render(): void {
 
     if (app?.settings) renderSettings(app.settings);
     if (app?.refresh) renderRefresh(app.refresh);
+    if (app) renderAutoRetryAndPacing(app);
     renderRefs(app?.references ?? []);
     renderHistory(app?.history ?? []);
 
@@ -242,6 +251,15 @@ function renderRefresh(r: AppState['refresh']): void {
   els.refreshEnabled.checked = r.enabled;
   els.refreshInterval.value = String(r.intervalMin || 0);
   els.refreshJobs.value = String(r.afterJobs || 0);
+}
+
+function renderAutoRetryAndPacing(app: AppState): void {
+  const ar = app.autoRetry ?? { enabled: true, maxRetries: 3, cooldownSec: 20, reloadOnUnusualActivity: true };
+  els.autoretryEnabled.checked = ar.enabled;
+  els.autoretryMax.value = String(ar.maxRetries || 3);
+  els.autoretryCooldown.value = String(ar.cooldownSec || 20);
+  els.autoretryReload.checked = ar.reloadOnUnusualActivity !== false;
+  els.setDelay.value = String(app.jobDelaySec !== undefined ? app.jobDelaySec : 5);
 }
 
 function setGenType(genType: GenSettings['genType']): void {
@@ -367,7 +385,8 @@ function jobRow(job: Job, refs: Reference[], total: number): HTMLElement {
   meta.className = 'meta';
   const badge = document.createElement('span');
   badge.className = `badge ${job.state}`;
-  badge.textContent = job.version > 1 ? `${STATE_LABEL[job.state] ?? job.state} v${job.version}` : (STATE_LABEL[job.state] ?? job.state);
+  const retrySuffix = (job.retryCount ?? 0) > 0 ? ` (retry ${job.retryCount})` : '';
+  badge.textContent = (job.version > 1 ? `${STATE_LABEL[job.state] ?? job.state} v${job.version}` : (STATE_LABEL[job.state] ?? job.state)) + retrySuffix;
 
   const actions = document.createElement('div');
   actions.className = 'job-actions';
@@ -775,6 +794,7 @@ function wireControls(): void {
   els.genVideo.onclick = () => setGenType('video');
   els.saveSettings.onclick = () => void saveSettings();
   els.saveRefresh.onclick = () => void saveRefresh();
+  els.saveAutoretry.onclick = () => void saveAutoRetryAndPacing();
   els.modalBackdrop.onclick = closeModal;
 }
 
@@ -849,6 +869,19 @@ async function saveRefresh(): Promise<void> {
       afterJobs: Number(els.refreshJobs.value) || 0,
     },
   });
+  await pullState();
+}
+
+async function saveAutoRetryAndPacing(): Promise<void> {
+  const delaySec = Math.max(0, Number(els.setDelay.value) || 0);
+  const autoRetry = {
+    enabled: els.autoretryEnabled.checked,
+    maxRetries: Math.max(1, Number(els.autoretryMax.value) || 3),
+    cooldownSec: Math.max(5, Number(els.autoretryCooldown.value) || 20),
+    reloadOnUnusualActivity: els.autoretryReload.checked,
+  };
+  await send({ type: 'setJobDelay', delaySec });
+  await send({ type: 'setAutoRetry', autoRetry });
   await pullState();
 }
 

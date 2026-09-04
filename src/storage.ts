@@ -64,6 +64,13 @@ export function normalizeApp(raw: Partial<AppState> | undefined): AppState {
     },
     jobsSinceRefresh: Math.max(0, raw?.jobsSinceRefresh || 0),
     lastRefreshAt: raw?.lastRefreshAt,
+    autoRetry: {
+      enabled: raw?.autoRetry?.enabled !== undefined ? !!raw.autoRetry.enabled : true,
+      maxRetries: Math.max(1, raw?.autoRetry?.maxRetries ?? 3),
+      cooldownSec: Math.max(5, raw?.autoRetry?.cooldownSec ?? 20),
+      reloadOnUnusualActivity: raw?.autoRetry?.reloadOnUnusualActivity !== undefined ? !!raw.autoRetry.reloadOnUnusualActivity : true,
+    },
+    jobDelaySec: Math.max(0, raw?.jobDelaySec !== undefined ? raw.jobDelaySec : 5),
   };
 }
 
@@ -76,6 +83,7 @@ function normalizeJob(job: Job | undefined): Job {
     refs: Array.isArray(job?.refs) ? job.refs.map(normalizeTagged) : [],
     version: job?.version ?? 1,
     downloads: Array.isArray(job?.downloads) ? job.downloads.map(normalizeDownload) : [],
+    retryCount: Math.max(0, job?.retryCount ?? 0),
   };
   if (job?.settings) j.settings = job.settings;
   if (job?.name) j.name = job.name;

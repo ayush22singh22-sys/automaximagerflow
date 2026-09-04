@@ -70,20 +70,17 @@ function isFlowUrl(url: string | undefined): boolean {
 
 async function findFlowTab(): Promise<number | null> {
   try {
-    const active = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    if (active.length > 0 && active[0].id !== undefined && isFlowUrl(active[0].url)) {
-      flowTabId = active[0].id;
-      return flowTabId;
-    }
     const tabs = await chrome.tabs.query({});
     const flow = tabs.find((t) => t.id !== undefined && isFlowUrl(t.url));
     if (flow?.id !== undefined) {
       flowTabId = flow.id;
+      chrome.tabs.update(flow.id, { autoDiscardable: false }).catch(noop);
       return flowTabId;
     }
     const titleMatch = tabs.find((t) => t.id !== undefined && t.title && /flow|google labs/i.test(t.title));
     if (titleMatch?.id !== undefined) {
       flowTabId = titleMatch.id;
+      chrome.tabs.update(titleMatch.id, { autoDiscardable: false }).catch(noop);
       return flowTabId;
     }
     return null;
@@ -96,7 +93,10 @@ async function getOrFindFlowTab(): Promise<number | null> {
   if (flowTabId !== null) {
     try {
       const tab = await chrome.tabs.get(flowTabId);
-      if (tab && isFlowUrl(tab.url)) return flowTabId;
+      if (tab && isFlowUrl(tab.url)) {
+        chrome.tabs.update(flowTabId, { autoDiscardable: false }).catch(noop);
+        return flowTabId;
+      }
     } catch {
       flowTabId = null;
     }
@@ -183,9 +183,11 @@ async function replacePromptWithNativeInput(tabId: number, text: string, x?: num
       await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
         type: 'mousePressed', x, y, button: 'left', clickCount: 1,
       });
+      await delay(60);
       await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
         type: 'mouseReleased', x, y, button: 'left', clickCount: 1,
       });
+      await delay(80);
     }
     await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
       type: 'keyDown', windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65, modifiers: 2,
@@ -193,13 +195,16 @@ async function replacePromptWithNativeInput(tabId: number, text: string, x?: num
     await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
       type: 'keyUp', windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65, modifiers: 2,
     });
+    await delay(30);
     await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
       type: 'keyDown', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8,
     });
     await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
       type: 'keyUp', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8,
     });
+    await delay(50);
     await chrome.debugger.sendCommand(target, 'Input.insertText', { text });
+    await delay(60);
     // Flow's editor enables Send after a real key interaction. Add/remove a
     // space so the final prompt text is unchanged but the full key path runs.
     await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
@@ -208,12 +213,14 @@ async function replacePromptWithNativeInput(tabId: number, text: string, x?: num
     await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
       type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32, nativeVirtualKeyCode: 32,
     });
+    await delay(30);
     await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
       type: 'keyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8,
     });
     await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
       type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8,
     });
+    await delay(50);
   } finally {
     if (attached) await chrome.debugger.detach(target).catch(noop);
   }
@@ -229,9 +236,11 @@ async function clickWithNativeInput(tabId: number, x: number, y: number): Promis
     await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
       type: 'mousePressed', x, y, button: 'left', clickCount: 1,
     });
+    await delay(60);
     await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
       type: 'mouseReleased', x, y, button: 'left', clickCount: 1,
     });
+    await delay(50);
   } finally {
     if (attached) await chrome.debugger.detach(target).catch(noop);
   }
@@ -311,6 +320,7 @@ function waitForTabComplete(tabId: number): Promise<boolean> {
 }
 
 let isDownloadInProgress = false;
+let lastJobFinishedAt = 0;
 
 async function advance(app: AppState): Promise<void> {
   if (isDownloadInProgress) return;
@@ -339,6 +349,21 @@ async function advance(app: AppState): Promise<void> {
   await saveApp(app);
 
   if (next.state === 'queued') {
+    // Inter-job pacing delay to avoid triggering Google Flow's unusual activity heuristics
+    const delaySec = app.jobDelaySec !== undefined ? app.jobDelaySec : 5;
+    if (delaySec > 0 && lastJobFinishedAt > 0) {
+      const elapsed = Date.now() - lastJobFinishedAt;
+      const waitMs = (delaySec * 1000) - elapsed;
+      if (waitMs > 0) {
+        setStatus(`Pacing: waiting ${Math.ceil(waitMs / 1000)}s before next job…`);
+        await delay(waitMs);
+        if (!app.running || app.paused) {
+          app.activeJobId = null;
+          await saveApp(app);
+          return;
+        }
+      }
+    }
     await startGeneration(app, next);
   } else {
     app.activeJobId = null;
@@ -678,9 +703,11 @@ async function handleInbound(msg: InboundMessage): Promise<void> {
         job.state = 'completed';
         job.finishedAt = Date.now();
         job.tempResult = undefined; // Success: clear tempResult
+        lastJobFinishedAt = Date.now();
       } else {
         job.state = 'failed-paused'; // Fail: keep tempResult for retry
         job.finishedAt = Date.now();
+        lastJobFinishedAt = Date.now();
       }
       await saveApp(stripDataUrls(app)).catch(noop);
       setStatus(buildStatus(app));
@@ -694,9 +721,74 @@ async function handleInbound(msg: InboundMessage): Promise<void> {
     return;
   }
 
+  // Handle generation failure or unusual activity error
+  const isUnusual = /unusual activity|unusual traffic|suspicious activity|rate limit|too many requests|slow down|quota exceeded/i.test(msg.error);
+  const autoRetry = app.autoRetry ?? { enabled: true, maxRetries: 3, cooldownSec: 20, reloadOnUnusualActivity: true };
+  const currentRetries = job.retryCount ?? 0;
+
+  if (autoRetry.enabled && currentRetries < autoRetry.maxRetries) {
+    job.retryCount = currentRetries + 1;
+    const attempt = job.retryCount;
+    const max = autoRetry.maxRetries;
+    const cooldownSec = autoRetry.cooldownSec;
+
+    console.log(`[background] Auto-retrying job ${job.id} (attempt ${attempt}/${max}) after error: ${msg.error}`);
+
+    job.genSummary = `Auto-retry ${attempt}/${max}: cooling down ${cooldownSec}s after Flow error…`;
+    job.error = msg.error;
+    setStatus(`Flow error detected. Cooling down ${cooldownSec}s before auto-retry (${attempt}/${max})…`);
+    await saveApp(app);
+    push(app);
+
+    const cooldownStart = Date.now();
+    const cooldownMs = cooldownSec * 1000;
+    while (Date.now() - cooldownStart < cooldownMs) {
+      if (!app.running || app.paused) return;
+      const remainingSec = Math.ceil((cooldownMs - (Date.now() - cooldownStart)) / 1000);
+      setStatus(`Cooldown: ${remainingSec}s before auto-retry (${attempt}/${max})…`);
+      await delay(1000);
+    }
+
+    if (!app.running || app.paused) return;
+
+    if (isUnusual || autoRetry.reloadOnUnusualActivity) {
+      setStatus(`Refreshing Flow tab before retry (${attempt}/${max})…`);
+      await refreshFlow(app);
+      if (!app.running || app.paused) return;
+    }
+
+    job.state = 'queued';
+    job.error = undefined;
+    job.startedAt = undefined;
+    job.finishedAt = undefined;
+    app.activeJobId = null;
+    await saveApp(app);
+    setStatus(buildStatus(app));
+    push(app);
+
+    await advance(app);
+    return;
+  }
+
+  if (isUnusual) {
+    console.warn(`[background] Unusual activity persisted after ${currentRetries} retries. Pausing queue.`);
+    app.running = false;
+    app.paused = true;
+    job.state = 'failed';
+    job.error = `Unusual activity detected: ${msg.error}. Queue paused to protect your account.`;
+    job.finishedAt = Date.now();
+    lastJobFinishedAt = Date.now();
+    app.activeJobId = null;
+    await saveApp(app);
+    setStatus(`Paused: Flow detected unusual activity. Cooldown recommended before resuming.`);
+    push(app);
+    return;
+  }
+
   job.state = 'failed';
   job.error = msg.error;
   job.finishedAt = Date.now();
+  lastJobFinishedAt = Date.now();
   app.jobsSinceRefresh += 1;
   await saveApp(app);
   setStatus(buildStatus(app));
@@ -704,14 +796,10 @@ async function handleInbound(msg: InboundMessage): Promise<void> {
   await advance(app);
 }
 
-async function retryJob(jobId: string): Promise<void> {
-  const app = await loadApp();
-  const job = app.currentRun.jobs.find((j) => j.id === jobId);
-  if (!job || !job.tempResult) return;
-  await handleInbound({ kind: 'job-result', ok: true, id: jobId, result: job.tempResult });
-}
-
 async function handleAction(action: Action): Promise<AppState> {
+  if (action.type === 'start' || action.type === 'resume' || action.type === 'clearCurrent') {
+    lastJobFinishedAt = 0;
+  }
   const app = reduceApp(await loadApp(), action);
   await saveApp(app);
   setStatus(buildStatus(app));
@@ -793,6 +881,19 @@ function setupTabListeners(): void {
   });
   chrome.tabs.onRemoved.addListener((tabId) => {
     if (tabId === flowTabId) void onFlowTabClosed();
+  });
+  chrome.runtime.onConnect.addListener((port) => {
+    if (port.name === 'flow-keepalive') {
+      port.onMessage.addListener((msg) => {
+        if (msg && (msg as { type?: string }).type === 'ping') {
+          try {
+            port.postMessage({ type: 'pong' });
+          } catch {
+            /* ignore */
+          }
+        }
+      });
+    }
   });
 }
 

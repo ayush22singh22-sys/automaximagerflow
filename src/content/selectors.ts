@@ -84,6 +84,10 @@ export const selectors: SelectorConfig = {
   failed: [
     '[data-testid*="error" i]',
     '[role="alert"]',
+    '[role="dialog"]',
+    'mat-snack-bar-container',
+    '[class*="snack" i]',
+    '[class*="toast" i]',
     '[class*="error" i]',
     '[aria-label*="Error" i]',
   ],

@@ -134,6 +134,31 @@
         </div>
         <button id="save-refresh" class="btn primary full">Save refresh settings</button>
       </div>
+
+      <div class="card">
+        <h2>Auto-Retry & Anti-Detection</h2>
+        <p class="muted">Automatically recover from "unusual activity" flags or transient errors with cooldown backoff, Flow tab reloads, and inter-job pacing delay.</p>
+        <label class="field">Delay between jobs (seconds, recommended 5s)
+          <input id="set-delay" type="number" min="0" max="120" />
+        </label>
+        <label class="field row-inline">
+          <input id="autoretry-enabled" type="checkbox" />
+          <span>Auto-retry on Flow errors / unusual activity</span>
+        </label>
+        <div class="row">
+          <label class="field grow">Max retries
+            <input id="autoretry-max" type="number" min="1" max="10" />
+          </label>
+          <label class="field grow">Cooldown (seconds)
+            <input id="autoretry-cooldown" type="number" min="5" max="300" />
+          </label>
+        </div>
+        <label class="field row-inline">
+          <input id="autoretry-reload" type="checkbox" />
+          <span>Reload Flow tab before retry</span>
+        </label>
+        <button id="save-autoretry" class="btn primary full">Save retry & pacing settings</button>
+      </div>
     </section>
 
     <!-- REFERENCES -->

@@ -88,6 +88,8 @@ export interface Job {
   genSummary?: string;
   /** Preserved result payload for download retries without re-generating. */
   tempResult?: FlowResult;
+  /** Automatic retry attempt count for generation failures / unusual activity. */
+  retryCount?: number;
 }
 
 export interface Run {
@@ -112,6 +114,17 @@ export interface FlowRefreshSettings {
   afterJobs: number;
 }
 
+/** Automatic retry configuration for transient errors / unusual activity flags. */
+export interface AutoRetrySettings {
+  enabled: boolean;
+  /** Maximum number of auto-retry attempts before marking job failed (default: 3). */
+  maxRetries: number;
+  /** Seconds to wait before attempting auto-retry (default: 20s). */
+  cooldownSec: number;
+  /** Whether to reload the Flow tab before retrying after unusual activity (default: true). */
+  reloadOnUnusualActivity: boolean;
+}
+
 export interface AppState {
   currentRun: Run;
   history: Run[];
@@ -125,6 +138,9 @@ export interface AppState {
   /** How many jobs have completed since the last Flow refresh. */
   jobsSinceRefresh: number;
   lastRefreshAt?: number;
+  autoRetry: AutoRetrySettings;
+  /** Delay in seconds to wait between completing one job and starting the next (default: 5s). */
+  jobDelaySec: number;
 }
 
 export type Action =
@@ -147,6 +163,8 @@ export type Action =
   | { type: 'clearCurrent' }
   | { type: 'setSettings'; settings: GenSettings }
   | { type: 'setRefresh'; refresh: FlowRefreshSettings }
+  | { type: 'setAutoRetry'; autoRetry: AutoRetrySettings }
+  | { type: 'setJobDelay'; delaySec: number }
   | { type: 'addReference'; reference: Reference }
   | { type: 'deleteReference'; id: string }
   | { type: 'openRun'; id: string }
